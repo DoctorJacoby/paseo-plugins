@@ -14,25 +14,11 @@ export function toneColor(palette: Palette, tone: Tone): string {
 
 export type Reading = { hint: string; tone: Tone };
 
-export function providerReading(status: StatusPayload): Reading {
-  const provider = status.provider;
-  switch (provider.state) {
-    case "matching":
-      return { hint: `Registered as "${provider.label ?? provider.id}" and pointing at this checkout`, tone: "ok" };
-    case "mismatched":
-      return { hint: `Registered, but pointing at ${provider.command?.[0] ?? "another command"}`, tone: "danger" };
-    case "foreign":
-      return { hint: `The ID "${provider.id}" is taken by a provider this plugin did not register`, tone: "danger" };
-    default:
-      return { hint: "Not registered yet", tone: "muted" };
-  }
-}
-
 export function adapterReading(status: StatusPayload): Reading {
-  if (status.adapter.binary === null) return { hint: "No checkout to look in", tone: "muted" };
+  if (status.adapter.binary === null) return { hint: "No checkout to look in", tone: "danger" };
   return status.adapter.built
     ? { hint: status.adapter.binary, tone: "ok" }
-    : { hint: "Not built yet — build it in the checkout", tone: "muted" };
+    : { hint: `${status.adapter.binary} is not built — run the build in the checkout`, tone: "danger" };
 }
 
 export function claudeReading(status: StatusPayload): Reading {

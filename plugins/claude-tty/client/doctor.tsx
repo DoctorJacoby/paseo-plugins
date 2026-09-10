@@ -61,7 +61,7 @@ function DoctorReport({ palette, report }: { palette: Palette; report: DoctorPay
         <Row
           palette={palette}
           title="Executable"
-          hint={report.adapter.binary ?? "Not registered and not built"}
+          hint={report.adapter.binary ?? "No checkout to look in"}
           dimmed={report.adapter.binary === null}
         />
         {report.adapter.checks.map((check) => (
@@ -76,16 +76,6 @@ function DoctorReport({ palette, report }: { palette: Palette; report: DoctorPay
       </Card>
 
       {report.adapter.problem === null ? null : <Monospace palette={palette} text={report.adapter.problem} />}
-
-      <View style={{ gap: spacing[2] }}>
-        <Text style={{ color: palette.foregroundMuted, fontSize: fontSize.sm, marginLeft: spacing[1] }}>
-          What Paseo reports when it launches the provider
-        </Text>
-        <Monospace
-          palette={palette}
-          text={report.daemon.diagnostic ?? report.daemon.error ?? "The daemon said nothing."}
-        />
-      </View>
     </View>
   );
 }

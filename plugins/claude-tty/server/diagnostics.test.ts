@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { failedChecks, parseDiagnosticsReport } from "./diagnostics.ts";
+import { parseDiagnosticsReport } from "./diagnostics.ts";
 
 const report = {
   version: "0.1.0",
@@ -31,11 +31,4 @@ test("rejects output that is not a report", () => {
 
 test("tolerates a report from a build that does not name its version", () => {
   assert.deepEqual(parseDiagnosticsReport('{"ok":true,"checks":[]}'), { version: null, ok: true, checks: [] });
-});
-
-test("picks out the checks worth reporting", () => {
-  assert.deepEqual(
-    failedChecks(parseDiagnosticsReport(JSON.stringify(report))!).map((check) => check.id),
-    ["claude"],
-  );
 });

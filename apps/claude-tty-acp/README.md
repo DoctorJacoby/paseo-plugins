@@ -28,7 +28,7 @@ The price is that every native affordance has to be reconstructed from terminal 
 Setup is host-local: the adapter runs wherever the Paseo daemon runs, so repeat every step below on each host that should offer Claude.
 See [Multiple hosts](#multiple-hosts) for what that means in practice.
 
-The [Claude Code plugin](../../plugins/claude-tty) does all of this from Paseo's sidebar, on whichever host is selected, and manages the provider entry afterwards.
+The [Claude Code plugin](../../plugins/claude-tty) replaces every step below except authentication: `paseo plugin add sleeyax/paseo-plugins --path plugins/claude-tty` clones this repository, builds the adapter, and registers the provider under its own ID.
 Install it instead if you would rather not run the steps below by hand; you still have to authenticate Claude yourself, as in [step 2](#2-authenticate-claude).
 
 ### 1. Build the adapter
@@ -75,7 +75,7 @@ A few details in that snippet are deliberate:
 
 - `supportsMcpServers: false` refers only to MCP servers that Paseo injects over ACP, which a running interactive Claude process cannot adopt.
   Claude's own MCP servers are unaffected; it loads them from its usual configuration at startup.
-- The provider ID is `traecli` because Paseo special-cases that ID when listing slash commands.
+- The provider ID is `traecli` because Paseo special-cases that ID when listing slash commands, and a configuration entry has no way to ask for the wait itself.
   See [slash commands need a borrowed provider ID](#slash-commands-need-a-borrowed-provider-id) before choosing another.
 
 `label` is what the agent view displays, so it can say anything.
@@ -276,6 +276,7 @@ A draft agent's composer lists commands for an agent that does not exist yet: Pa
 Under any other ID the composer stays empty until the agent has taken its first turn, after which the live session has the commands cached.
 
 The configured label is what users see, so the borrowed ID stays invisible, but a genuine Trae CLI provider cannot be registered next to it and a future Paseo release may drop the special case.
+None of this applies to the plugin: a plugin provider asks for the same wait through `acpOptions.waitForInitialCommands`, so it carries the ID `claude-tty`.
 
 Related, a draft must carry a model ID that is not literally `default`: Paseo reads `default` as "no model selected" and returns an empty list before the adapter ever launches, which is why the pass-through entry is named `inherit` instead.
 

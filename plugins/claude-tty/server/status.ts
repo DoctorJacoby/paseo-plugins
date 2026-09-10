@@ -1,65 +1,44 @@
-import type { PaseoApi } from "@getpaseo/client";
 import type { StatusPayload } from "../shared/contracts.ts";
-import { adapterBinaryPath, adapterEntryPath, claudeCandidates, defaultStateDirectory, settingsFilePath } from "./paths.ts";
-import { PROVIDER_ID, classifyProviderEntry, commandOf, envOf, providerEntryFor } from "./provider.ts";
+import { adapterBinaryPath, adapterEntryPath, claudeCandidates, defaultStateDirectory, settingsFilePath, type Env } from "./paths.ts";
 import { IDLE_TIMEOUT_ENV, parseIdleTimeout } from "../shared/settings.ts";
 import { fileExists, firstExecutable, resolveRepoRoot } from "./checkout.ts";
 import { readSettings } from "./settings-store.ts";
 
-export async function readStatus(paseo: PaseoApi): Promise<StatusPayload> {
-  const [repo, claudeBinary, saved] = await Promise.all([resolveRepoRoot(paseo), firstExecutable(claudeCandidates()), readSettings()]);
-  const host = { node: process.version, claude: claudeBinary };
-  const stateDirectory = defaultStateDirectory();
-  const file = settingsFilePath();
+export async function readStatus(env: Env = process.env): Promise<StatusPayload> {
+  const [repo, claudeBinary, saved] = await Promise.all([
+    resolveRepoRoot(env),
+    firstExecutable(claudeCandidates(env)),
+    readSettings(env),
+  ]);
+  const settings = {
+    idleTimeoutMs: saved.idleTimeoutMs,
+    file: settingsFilePath(env),
+    envOverrideMs: envOverrideOf(env),
+  };
+  const common = {
+    host: { node: process.version, claude: claudeBinary },
+    stateDirectory: defaultStateDirectory(env),
+    settings,
+  };
 
   if (repo.root === null) {
-    return {
-      repoRoot: null,
-      problem: repo.problem,
-      adapter: { binary: null, built: false },
-      provider: { id: PROVIDER_ID, state: "absent", label: null, command: null, expectedCommand: null },
-      host,
-      stateDirectory,
-      settings: { idleTimeoutMs: saved.idleTimeoutMs, file, envOverrideMs: null },
-    };
+    return { repoRoot: null, problem: repo.problem, adapter: { binary: null, built: false }, ...common };
   }
-
-  const [built, existing] = await Promise.all([fileExists(adapterEntryPath(repo.root)), readProviderEntry(paseo)]);
-  const expected = providerEntryFor(repo.root);
 
   return {
     repoRoot: repo.root,
     problem: null,
-    adapter: { binary: adapterBinaryPath(repo.root), built },
-    provider: {
-      id: PROVIDER_ID,
-      state: classifyProviderEntry(existing, expected),
-      label: labelOf(existing),
-      command: commandOf(existing),
-      expectedCommand: expected.command,
-    },
-    host,
-    stateDirectory,
-    settings: { idleTimeoutMs: saved.idleTimeoutMs, file, envOverrideMs: envOverrideOf(existing) },
+    adapter: { binary: adapterBinaryPath(repo.root), built: await fileExists(adapterEntryPath(repo.root)) },
+    ...common,
   };
 }
 
 /**
- * The adapter lets the environment variable win, so an entry that sets it makes the saved value moot.
- * A variable set on the daemon's own process is invisible from here and is not reported.
+ * The adapter inherits this process's environment and lets the variable win over the settings file,
+ * so a value set on the daemon makes the saved one moot. The daemon may still put one into a
+ * session's own environment, which is invisible from here and is not reported.
  */
-function envOverrideOf(entry: unknown): number | null {
-  const raw = envOf(entry)?.[IDLE_TIMEOUT_ENV];
+function envOverrideOf(env: Env): number | null {
+  const raw = env[IDLE_TIMEOUT_ENV];
   return raw === undefined ? null : parseIdleTimeout(raw);
-}
-
-export async function readProviderEntry(paseo: PaseoApi): Promise<unknown> {
-  const { config } = await paseo.config.get();
-  return config.providers?.[PROVIDER_ID];
-}
-
-function labelOf(entry: unknown): string | null {
-  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return null;
-  const label = (entry as { label?: unknown }).label;
-  return typeof label === "string" ? label : null;
 }
