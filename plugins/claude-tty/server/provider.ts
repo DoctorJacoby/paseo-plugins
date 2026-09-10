@@ -2,7 +2,7 @@ import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
 import { PROVIDER_ID, PROVIDER_LABEL } from "../shared/provider.ts";
 import { resolveRepoRoot } from "./checkout.ts";
-import { adapterBinaryPath } from "./paths.ts";
+import { adapterCommand } from "./paths.ts";
 
 /**
  * Claude publishes its slash commands and skills after `initialize`, over `available_commands_update`,
@@ -22,8 +22,9 @@ export function claudeTtyProvider(): ProviderRegistration {
     description: "The genuine interactive Claude Code CLI, driven in a PTY",
     icon: PROVIDER_ICON,
     /**
-     * The command names the adapter inside the checkout this plugin was installed from, which is
-     * only knowable at runtime, so the ACP shim is built per connection rather than at registration.
+     * The command names the adapter inside the checkout this plugin was installed from, and the
+     * settings document the host keeps for this plugin, neither of which is knowable before the
+     * plugin runs, so the ACP shim is built per connection rather than at registration.
      */
     async connect(request) {
       const repo = await resolveRepoRoot();
@@ -31,7 +32,7 @@ export function claudeTtyProvider(): ProviderRegistration {
       return runAcpProvider({
         id: PROVIDER_ID,
         label: PROVIDER_LABEL,
-        command: [adapterBinaryPath(repo.root)],
+        command: adapterCommand(repo.root),
         acpOptions: { waitForInitialCommands: true, initialCommandsTimeoutMs: INITIAL_COMMANDS_TIMEOUT_MS },
       }).connect(request);
     },

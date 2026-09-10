@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,21 +10,17 @@ import {
   idleTimeoutFromEnv,
   parseIdleTimeout,
   readIdleTimeout,
-  settingsFilePath,
+  useSettingsFile,
 } from "./idle-timeout.ts";
 
-async function withSettingsFile(contents: string | null, run: (env: Record<string, string>) => Promise<void>): Promise<void> {
-  const cache = await mkdtemp(path.join(os.tmpdir(), "claude-tty-idle-"));
-  const env = { XDG_CACHE_HOME: cache, HOME: cache };
+async function withSettingsFile(contents: string | null, run: (filePath: string) => Promise<void>): Promise<void> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "claude-tty-idle-"));
+  const filePath = path.join(directory, "settings.json");
   try {
-    if (contents !== null) {
-      const target = settingsFilePath(env);
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, contents);
-    }
-    await run(env);
+    if (contents !== null) await writeFile(filePath, contents);
+    await run(filePath);
   } finally {
-    await rm(cache, { force: true, recursive: true });
+    await rm(directory, { force: true, recursive: true });
   }
 }
 
@@ -47,31 +43,50 @@ test("reports a malformed environment value instead of failing the process over 
 });
 
 test("defaults idle suspension to one hour when nothing configures it", async () => {
-  await withSettingsFile(null, async (env) => {
-    assert.equal(await readIdleTimeout(env), DEFAULT_IDLE_TIMEOUT_MS);
+  assert.equal(await readIdleTimeout({}, null), DEFAULT_IDLE_TIMEOUT_MS);
+  await withSettingsFile(null, async (filePath) => {
+    assert.equal(await readIdleTimeout({}, filePath), DEFAULT_IDLE_TIMEOUT_MS);
   });
 });
 
-test("reads the timeout the plugin saved, including a zero that disables suspension", async () => {
-  await withSettingsFile(JSON.stringify({ version: 1, settings: { idleTimeoutMs: 900_000 } }), async (env) => {
-    assert.equal(await readIdleTimeout(env), 900_000);
+test("reads the timeout the host saved, including a zero that disables suspension", async () => {
+  await withSettingsFile(JSON.stringify({ version: 1, values: { idleTimeoutMs: 900_000 } }), async (filePath) => {
+    assert.equal(await readIdleTimeout({}, filePath), 900_000);
   });
-  await withSettingsFile(JSON.stringify({ version: 1, settings: { idleTimeoutMs: 0 } }), async (env) => {
-    assert.equal(await readIdleTimeout(env), 0);
+  await withSettingsFile(JSON.stringify({ version: 1, values: { idleTimeoutMs: 0 } }), async (filePath) => {
+    assert.equal(await readIdleTimeout({}, filePath), 0);
   });
+});
+
+test("honours a document written by another schema version, because the value is still readable", async () => {
+  await withSettingsFile(JSON.stringify({ version: 7, values: { idleTimeoutMs: 900_000 } }), async (filePath) => {
+    assert.equal(await readIdleTimeout({}, filePath), 900_000);
+  });
+});
+
+test("takes the document named at spawn as the default for every later read", async () => {
+  await withSettingsFile(JSON.stringify({ version: 1, values: { idleTimeoutMs: 900_000 } }), async (filePath) => {
+    useSettingsFile(filePath);
+    try {
+      assert.equal(await readIdleTimeout({}), 900_000);
+    } finally {
+      useSettingsFile(null);
+    }
+  });
+  assert.equal(await readIdleTimeout({}), DEFAULT_IDLE_TIMEOUT_MS);
 });
 
 test("lets the environment variable override the saved setting", async () => {
-  await withSettingsFile(JSON.stringify({ version: 1, settings: { idleTimeoutMs: 900_000 } }), async (env) => {
-    assert.equal(await readIdleTimeout({ ...env, [IDLE_TIMEOUT_ENV]: "60000" }), 60_000);
+  await withSettingsFile(JSON.stringify({ version: 1, values: { idleTimeoutMs: 900_000 } }), async (filePath) => {
+    assert.equal(await readIdleTimeout({ [IDLE_TIMEOUT_ENV]: "60000" }, filePath), 60_000);
   });
 });
 
-test("falls back to the default for a settings file it cannot use", async () => {
-  const unusable = ["not json", JSON.stringify({ version: 1 }), JSON.stringify({ version: 1, settings: { idleTimeoutMs: "soon" } })];
+test("falls back to the default for a settings document it cannot use", async () => {
+  const unusable = ["not json", JSON.stringify({ version: 1 }), JSON.stringify({ version: 1, values: { idleTimeoutMs: "soon" } })];
   for (const contents of unusable) {
-    await withSettingsFile(contents, async (env) => {
-      assert.equal(await readIdleTimeout(env), DEFAULT_IDLE_TIMEOUT_MS);
+    await withSettingsFile(contents, async (filePath) => {
+      assert.equal(await readIdleTimeout({}, filePath), DEFAULT_IDLE_TIMEOUT_MS);
     });
   }
 });

@@ -1,4 +1,5 @@
 import { useRpc } from "@getpaseo/plugin/client";
+import { SettingsCard, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React from "react";
 import { Text, View } from "react-native";
@@ -6,7 +7,7 @@ import * as contracts from "../shared/contracts.ts";
 import type { DoctorPayload } from "../shared/contracts.ts";
 import { fontSize, leading, spacing, type Palette } from "./theme.ts";
 import { Monospace, ReadingRow } from "./status.tsx";
-import { Button, Card, Row, Section } from "./ui.tsx";
+import { Button } from "./ui.tsx";
 
 export const DOCTOR_QUERY_KEY = ["claude-tty", "doctor"];
 
@@ -22,8 +23,7 @@ export function DoctorSection({ palette }: { palette: Palette }) {
   const report = query.data ?? null;
 
   return (
-    <Section
-      palette={palette}
+    <SettingsSection
       title="Diagnostics"
       trailing={
         <Button
@@ -50,30 +50,24 @@ export function DoctorSection({ palette }: { palette: Palette }) {
       ) : (
         <DoctorReport palette={palette} report={report} />
       )}
-    </Section>
+    </SettingsSection>
   );
 }
 
 function DoctorReport({ palette, report }: { palette: Palette; report: DoctorPayload }) {
   return (
     <View style={{ gap: spacing[4] }}>
-      <Card palette={palette}>
-        <Row
-          palette={palette}
-          title="Executable"
-          hint={report.adapter.binary ?? "No checkout to look in"}
-          dimmed={report.adapter.binary === null}
-        />
+      <SettingsCard>
+        <SettingsRow label="Executable" hint={report.adapter.binary ?? "No checkout to look in"} />
         {report.adapter.checks.map((check) => (
           <ReadingRow
             key={check.id}
             palette={palette}
             title={check.label}
             reading={{ hint: check.detail, tone: check.ok ? "ok" : "danger" }}
-            divided
           />
         ))}
-      </Card>
+      </SettingsCard>
 
       {report.adapter.problem === null ? null : <Monospace palette={palette} text={report.adapter.problem} />}
     </View>

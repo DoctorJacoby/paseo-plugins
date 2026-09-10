@@ -2,23 +2,16 @@ import type { StatusPayload } from "../shared/contracts.ts";
 import { adapterBinaryPath, adapterEntryPath, claudeCandidates, defaultStateDirectory, settingsFilePath, type Env } from "./paths.ts";
 import { IDLE_TIMEOUT_ENV, parseIdleTimeout } from "../shared/settings.ts";
 import { fileExists, firstExecutable, resolveRepoRoot } from "./checkout.ts";
-import { readSettings } from "./settings-store.ts";
 
 export async function readStatus(env: Env = process.env): Promise<StatusPayload> {
-  const [repo, claudeBinary, saved] = await Promise.all([
+  const [repo, claudeBinary] = await Promise.all([
     resolveRepoRoot(env),
     firstExecutable(claudeCandidates(env)),
-    readSettings(env),
   ]);
-  const settings = {
-    idleTimeoutMs: saved.idleTimeoutMs,
-    file: settingsFilePath(env),
-    envOverrideMs: envOverrideOf(env),
-  };
   const common = {
     host: { node: process.version, claude: claudeBinary },
     stateDirectory: defaultStateDirectory(env),
-    settings,
+    settings: { file: settingsFilePath(env), envOverrideMs: envOverrideOf(env) },
   };
 
   if (repo.root === null) {
@@ -34,9 +27,9 @@ export async function readStatus(env: Env = process.env): Promise<StatusPayload>
 }
 
 /**
- * The adapter inherits this process's environment and lets the variable win over the settings file,
- * so a value set on the daemon makes the saved one moot. The daemon may still put one into a
- * session's own environment, which is invisible from here and is not reported.
+ * The adapter inherits this process's environment and lets the variable win over the settings
+ * document, so a value set on the daemon makes the saved one moot. The daemon may still put one into
+ * a session's own environment, which is invisible from here and is not reported.
  */
 function envOverrideOf(env: Env): number | null {
   const raw = env[IDLE_TIMEOUT_ENV];
