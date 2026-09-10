@@ -8,7 +8,6 @@ import * as contracts from "../shared/contracts.ts";
 import { PROVIDER_LABEL } from "../shared/provider.ts";
 import { DoctorSection } from "./doctor.tsx";
 import { SessionsSection } from "./sessions.tsx";
-import { SubagentsSection } from "./subagents.tsx";
 import { RemoveStateSection } from "./uninstall.tsx";
 import { MAX_CONTENT_WIDTH, fontSize, leading, spacing } from "./theme.ts";
 import { Monospace, ReadingRow, adapterReading, claudeReading } from "./status.tsx";
@@ -79,8 +78,6 @@ export function ClaudeTtySurface({ theme, layout, navigation }: PluginSurfacePro
       <DoctorSection palette={palette} />
 
       <SessionsSection palette={palette} navigation={navigation} />
-
-      <SubagentsSection palette={palette} />
 
       <SettingsSection title="This host">
         <SettingsCard>

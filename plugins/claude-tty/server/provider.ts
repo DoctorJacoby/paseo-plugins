@@ -4,6 +4,8 @@ import { PROVIDER_ID, PROVIDER_LABEL } from "../shared/provider.ts";
 import { resolveRepoRoot } from "./checkout.ts";
 import { adapterCommand, cardAnswersDirectory, defaultStateDirectory } from "./paths.ts";
 import { withPermissionCards } from "./permission-bridge.ts";
+import { subagentSource } from "./subagents.ts";
+import { withSubagentSessions } from "./subsessions.ts";
 
 /**
  * Claude publishes its slash commands and skills after `initialize`, over `available_commands_update`,
@@ -36,7 +38,13 @@ export function claudeTtyProvider(): ProviderRegistration {
         command: adapterCommand(repo.root),
         acpOptions: { waitForInitialCommands: true, initialCommandsTimeoutMs: INITIAL_COMMANDS_TIMEOUT_MS },
       }).connect(request);
-      return withPermissionCards(connection, cardAnswersDirectory(defaultStateDirectory()));
+      // The subsessions go outermost, so what the daemon is told this connection can do is what the
+      // wrapper that emits the child sessions has already agreed to.
+      return withSubagentSessions(
+        withPermissionCards(connection, cardAnswersDirectory(defaultStateDirectory())),
+        subagentSource(),
+        request.capabilities,
+      );
     },
   };
 }
