@@ -15,18 +15,6 @@ export default function contribute(client: PluginClientContext) {
   });
 
   client.addCommandCenterItem({
-    id: "claude-tty-install",
-    title: "Claude TTY: install or update",
-    icon: "Download",
-    keywords: ["claude", "adapter", "acp", "install", "build", "provider"],
-    context: "global",
-    async onSelect({ rpc, openSurface }) {
-      openSurface(SURFACE_ID);
-      await rpc(contracts.startInstall, { repair: false });
-    },
-  });
-
-  client.addCommandCenterItem({
     id: "claude-tty-doctor",
     title: "Claude TTY: run diagnostics",
     icon: "Stethoscope",

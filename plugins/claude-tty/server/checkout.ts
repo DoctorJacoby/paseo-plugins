@@ -1,27 +1,33 @@
-import { access, constants } from "node:fs/promises";
-import type { PaseoApi } from "@getpaseo/client";
-import { PLUGIN_ID, adapterManifestPath, repoRootFromPluginPath } from "./paths.ts";
+import { access, constants, readFile } from "node:fs/promises";
+import { PLUGIN_ID, adapterManifestPath, daemonConfigPath, repoRootFromPluginPath, type Env } from "./paths.ts";
 
 export type RepoRoot = { root: string; problem: null } | { root: null; problem: string };
 
 /**
- * The plugin manages the checkout it was itself installed from, which only the daemon config knows.
- * A bundled plugin has no reliable path of its own to walk up from.
+ * The plugin manages the adapter in the checkout it was installed from, and nothing in the plugin
+ * runtime says where that is: the server bundle is evaluated from a string, so it has neither
+ * `__dirname` nor a usable `import.meta`, and the daemon's initialize message carries only the
+ * plugin ID. The daemon configuration is the one record of the path, and it is read from disk
+ * rather than asked for over `paseo.config.get()` because the daemon connects the provider before
+ * any RPC has handed the plugin a `PaseoApi`.
  */
-export async function resolveRepoRoot(paseo: PaseoApi): Promise<RepoRoot> {
-  let entry: { path: string } | undefined;
+export async function resolveRepoRoot(env: Env = process.env): Promise<RepoRoot> {
+  const configPath = daemonConfigPath(env);
+  let entry: { path?: unknown } | undefined;
   try {
-    entry = (await paseo.config.get()).config.plugins?.[PLUGIN_ID];
+    const config = JSON.parse(await readFile(configPath, "utf8")) as { plugins?: Record<string, { path?: unknown }> };
+    entry = config.plugins?.[PLUGIN_ID];
   } catch (error) {
-    return { root: null, problem: `Could not read the daemon configuration: ${messageOf(error)}` };
+    return { root: null, problem: `Could not read ${configPath}: ${messageOf(error)}` };
   }
-  if (!entry) {
-    return { root: null, problem: `The daemon configuration has no plugin entry for "${PLUGIN_ID}", so there is no checkout to manage.` };
+  if (typeof entry?.path !== "string") {
+    return { root: null, problem: `${configPath} has no plugin entry for "${PLUGIN_ID}", so there is no checkout to manage.` };
   }
-  const root = repoRootFromPluginPath(entry.path);
+  const pluginPath = entry.path;
+  const root = repoRootFromPluginPath(pluginPath);
   const manifest = adapterManifestPath(root);
   if (!(await fileExists(manifest))) {
-    return { root: null, problem: `${manifest} does not exist, so ${entry.path} is not a plugin directory inside a paseo-plugins checkout.` };
+    return { root: null, problem: `${manifest} does not exist, so ${pluginPath} is not a plugin directory inside a paseo-plugins checkout.` };
   }
   return { root, problem: null };
 }

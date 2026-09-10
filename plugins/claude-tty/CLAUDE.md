@@ -1,12 +1,13 @@
 # Working on this plugin
 
 Run `paseo plugin reload claude-tty` after every change, then `paseo plugin logs claude-tty`.
-The reload is the only compile check of the two bundles the daemon builds.
 Do this yourself; never leave it to the user.
+Where a reload is not available — another agent's sessions are on this provider, say — the daemon's own compiler answers the same question without touching it: import `compilePlugin` from `@getpaseo/server/dist/server/server/plugins/compiler.js` and run it over the two entries, then `readPluginProviderIcon` from `provider-icon.js` beside it for the icon.
 That log is the plugin's; the adapter's is `~/.local/state/claude-tty-acp/logs/claude-tty-acp.log`, because the daemon drops the adapter's stderr, and a running adapter process keeps the code it started with — a rebuilt `dist/` reaches the sessions started after it.
 
-`paseo plugin install <directory>` works against a 0.6 daemon and writes the `plugins` entry itself, but the plugin only loads once `pluginsEnabled` is true in `~/.paseo/config.json` and `paseo reload` has run.
-The v0.7 `paseo plugin add <repo>` form is not usable for this plugin: a Git installation runs no package manager, and the adapter this plugin manages has to be built.
+`paseo plugin add <repo> --path plugins/claude-tty` is the supported install: the daemon clones into a staging directory, runs the manifest's `build` commands there with the plugin directory as the cwd, and only then places and starts it.
+`pnpm` walks up to the workspace root from that cwd, which is why `pnpm install --frozen-lockfile` and `pnpm --filter @paseo-plugins/claude-tty-acp build` are enough (verified by running both from `plugins/claude-tty`).
+A directory install runs no build at all, so a clone has to be built by hand before it is added.
 
 To exercise a handler without a client, invoke it over the daemon's own plugin RPC:
 
@@ -16,13 +17,18 @@ const client = await connectToDaemon({});
 console.log(await client.invokePluginRpc("claude-tty", "claude-tty.status", {}));
 ```
 
-That is the only way to see what a step machine or a filesystem guard actually does, so use it rather than reasoning about the code.
+That is the only way to see what a filesystem guard actually does, so use it rather than reasoning about the code.
 
-## The checkout is not discoverable
+## The checkout is not discoverable, and the daemon asks for the provider before it can be
 
-The plugin manages the adapter in the checkout it was installed from, and a bundled plugin has no path of its own to walk up from.
-`paseo.config.get().plugins["claude-tty"].path` is the one source, and `apps/claude-tty-acp/package.json` has to exist two levels above it before anything else is worth reporting.
-`server/checkout.ts` does that resolving and the filesystem probing around it; `server/paths.ts` is the naming vocabulary it builds on and computes paths without touching the disk.
+The plugin runs the adapter built inside the checkout it was installed from, and nothing in the plugin runtime says where that is.
+The server bundle is `eval`'d from a string in a wrapper taking only `require`, so it has no `__dirname`, and esbuild compiles `import.meta` to `{}`; the daemon's initialize message carries `pluginId`, `appVersion`, `bundle` and `settingsDirectory` and no path.
+The daemon's own configuration is the one record, so `server/checkout.ts` reads `$PASEO_HOME/config.json` — the plugin process inherits `PASEO_HOME` from the daemon — rather than asking over `paseo.config.get()`, because `registerProvider` has to be called synchronously during the contribution and the daemon connects the provider about ten milliseconds after the plugin reports ready, long before any RPC has handed the plugin a `PaseoApi`.
+`apps/claude-tty-acp/package.json` has to exist two levels above the plugin directory before anything else is worth reporting.
+`server/paths.ts` is the naming vocabulary that resolving builds on and computes paths without touching the disk.
+
+`connect()` is async, so the command is resolved per connection rather than at registration: `server/provider.ts` builds the `runAcpProvider` shim inside `connect` and delegates to it.
+That shim spawns one adapter process per ACP session, plus a throwaway one per connection to probe capabilities and another per catalogue fetch, and it drops the adapter's stderr — which is why the diagnostics section still runs the adapter's own `--diagnose`.
 
 ## Constraints that are not obvious
 
@@ -30,24 +36,26 @@ The daemon's `PATH` is not your shell's.
 A systemd daemon typically has `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin` and nothing else, so Claude is routinely missing from it.
 That is a reading the surface reports, not an error to hide, and every spawn failure has to read as a sentence rather than a stack trace.
 
-The plugin never builds the adapter, because a daemon that cannot see a package manager cannot be made to.
-It reports whether `dist/cli.js` is there and leaves the build to whoever owns the checkout.
+The plugin never builds the adapter itself; install and update do, through the manifest's `build`, and a directory install leaves it to whoever owns the checkout.
+The surface reports whether `dist/cli.js` is there, because that is what a spawn failure will otherwise say opaquely.
 
-A plugin session cannot see a custom provider in `providers.snapshot()`.
-The daemon filters every entry through `isProviderVisibleToClient`, which falls back to `claude`, `codex` and `opencode` for any session that does not declare an `appVersion`, so the doctor reads `providers.diagnostic` instead, which is not filtered.
+A plugin session sees every provider in `providers.snapshot()`, custom and plugin-registered alike.
+The daemon filters through `isProviderVisibleToClient`, which passes anything whose client declares `all_providers` or an `appVersion` of at least 0.1.45; the plugin's own client declares both, the second from the daemon version the initialize message carries.
+Verified against a throwaway plugin on a 0.8.0 daemon, which saw `traecli` and its own provider in the entries.
 
-`config.patch` applies to the live provider registry without a daemon restart, because `agents.providers` is reloadable and the daemon stages the change into the registry as it persists it.
-`deepMerge` replaces arrays wholesale but keeps keys the patch does not mention, so repointing an entry has to `removeProviders` first and re-add, or a stale `env` or `models` survives the rewrite.
-The daemon validates a custom provider on its way in: the ID must match `^[a-z][a-z0-9-]*$`, `extends` must be a builtin or `acp`, and `extends: "acp"` requires a non-empty `command`.
-
-The installer's job outlives the request that starts it, so it lives in module scope and the client polls it.
-Module scope is the only state a plugin process has between RPC calls.
+The daemon validates a plugin provider on its way in: the ID must match `^[a-z][a-z0-9._-]*$`, may not be a builtin or an ID the configuration already holds, and the registration needs a non-empty label and a `connect`.
+The ID is stored verbatim — no namespacing by plugin.
+`icon` is a path relative to the plugin directory, read and sanitised once when the plugin starts: a regular SVG file under 64 KiB, with no script, style, `foreignObject`, event-handler attribute, JavaScript URL, or `href` that does not start with `#`. Editing it takes a reload.
 
 Session and lock liveness is decided with signal 0 exactly the way the adapter decides it, so the two never disagree about which lock is stale.
 
-Stopping a session signals the process the lock names, which is one adapter process per ACP session, spawned by the daemon.
+Stopping a session signals the process the lock names, which is one adapter process per ACP session, spawned by the plugin process rather than the daemon since the provider moved into the plugin.
 `SIGTERM` is enough: the adapter's own handler closes the session, which stops the Claude PTY and releases the lock, so the persisted session and the Paseo agent both survive and the next prompt resumes them.
-Never signal a process group: the daemon spawns the adapter undetached, so `-pid` is the daemon's own group.
+Never signal a process group: the adapter is spawned undetached, so `-pid` is the plugin process's own group.
+
+Reloading the plugin does not preserve a session, and there is no re-parenting.
+The daemon stops the plugin, retires the provider, and closes every agent on it, persisting a snapshot first; the ACP shim SIGTERMs each adapter on the way out and escalates to `SIGKILL` after one second, which is where a lock can be left behind for "Release lock".
+Recovery is lazy: the next thing to touch such an agent resumes it from the `{ version, data }` persistence blob under a fresh provider session ID, with `history: "replay"`, so what survives is whatever the adapter wrote into that blob — never an in-flight turn.
 
 ## Identifying the process a lock names
 

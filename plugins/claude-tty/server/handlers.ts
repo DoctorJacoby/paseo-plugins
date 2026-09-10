@@ -1,39 +1,29 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type {
   DoctorPayload,
-  InstallJobPayload,
+  RemoveStatePayload,
   SessionsPayload,
   StatusPayload,
   SubagentsPayload,
   SubagentTranscriptPayload,
-  UninstallPayload,
 } from "../shared/contracts.ts";
 import { lastDoctorReport, runDoctor } from "./doctor.ts";
-import { currentInstall, startInstall } from "./install.ts";
 import { listSessions, quarantineSession, releaseLock, releaseStaleLocks, stopSession } from "./sessions.ts";
 import { listSubagents, readSubagentTranscript } from "./subagents.ts";
-import { runUninstall } from "./uninstall.ts";
+import { removeState } from "./uninstall.ts";
 import { readStatus } from "./status.ts";
 import { updateSettings } from "./settings.ts";
 
-export function statusHandler(paseo: PaseoApi): Promise<StatusPayload> {
-  return readStatus(paseo);
+export function statusHandler(): Promise<StatusPayload> {
+  return readStatus();
 }
 
-export function settingsHandler(paseo: PaseoApi, input: { idleTimeoutMs: number }): Promise<StatusPayload> {
-  return updateSettings(paseo, input.idleTimeoutMs);
+export function settingsHandler(input: { idleTimeoutMs: number }): Promise<StatusPayload> {
+  return updateSettings(input.idleTimeoutMs);
 }
 
-export function startInstallHandler(paseo: PaseoApi, input: { repair: boolean }): InstallJobPayload {
-  return startInstall(paseo, input);
-}
-
-export function installStatusHandler(): InstallJobPayload | null {
-  return currentInstall();
-}
-
-export function doctorHandler(paseo: PaseoApi): Promise<DoctorPayload> {
-  return runDoctor(paseo);
+export function doctorHandler(): Promise<DoctorPayload> {
+  return runDoctor();
 }
 
 export function sessionsHandler(paseo: PaseoApi): Promise<SessionsPayload> {
@@ -68,6 +58,6 @@ export function releaseStaleLocksHandler(paseo: PaseoApi): Promise<SessionsPaylo
   return releaseStaleLocks(paseo);
 }
 
-export function uninstallHandler(paseo: PaseoApi, input: { removeState: boolean }): Promise<UninstallPayload> {
-  return runUninstall(paseo, input);
+export function removeStateHandler(): Promise<RemoveStatePayload> {
+  return removeState();
 }

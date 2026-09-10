@@ -1,9 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
-import { INSTALL_STEP_IDS } from "./install.ts";
 import { MAX_IDLE_TIMEOUT_MS } from "./settings.ts";
-
-export const ProviderStateSchema = z.enum(["absent", "matching", "mismatched", "foreign"]);
 
 export const StatusSchema = z.object({
   /** The checkout this plugin was installed from, or null when it could not be identified. */
@@ -14,13 +11,6 @@ export const StatusSchema = z.object({
     binary: z.string().nullable(),
     built: z.boolean(),
   }),
-  provider: z.object({
-    id: z.string(),
-    state: ProviderStateSchema,
-    label: z.string().nullable(),
-    command: z.array(z.string()).nullable(),
-    expectedCommand: z.array(z.string()).nullable(),
-  }),
   host: z.object({
     node: z.string(),
     claude: z.string().nullable(),
@@ -30,7 +20,7 @@ export const StatusSchema = z.object({
     idleTimeoutMs: z.number().int().nonnegative(),
     /** Where the value is stored, which is the plugin's own settings file rather than the daemon config. */
     file: z.string(),
-    /** Set when the provider entry pins the timeout in `env`, which the adapter honours over this setting. */
+    /** Set when the daemon's environment pins the timeout, which the adapter honours over this setting. */
     envOverrideMs: z.number().int().nonnegative().nullable(),
   }),
 });
@@ -49,38 +39,6 @@ export const setSettings = defineRpc({
   output: StatusSchema,
 });
 
-export const InstallStepSchema = z.object({
-  id: z.enum(INSTALL_STEP_IDS),
-  label: z.string(),
-  state: z.enum(["pending", "running", "ok", "failed"]),
-  detail: z.string(),
-  stdout: z.string(),
-  stderr: z.string(),
-  exitCode: z.number().nullable(),
-});
-
-export const InstallJobSchema = z.object({
-  state: z.enum(["running", "ok", "failed"]),
-  startedAt: z.number(),
-  finishedAt: z.number().nullable(),
-  steps: z.array(InstallStepSchema),
-});
-
-export type InstallJobPayload = z.output<typeof InstallJobSchema>;
-
-export const startInstall = defineRpc({
-  name: "claude-tty.install.start",
-  /** Repointing an entry that already exists is never part of an ordinary install. */
-  input: z.object({ repair: z.boolean() }),
-  output: InstallJobSchema,
-});
-
-export const getInstall = defineRpc({
-  name: "claude-tty.install.status",
-  input: z.object({}),
-  output: InstallJobSchema.nullable(),
-});
-
 export const DiagnosticCheckSchema = z.object({
   id: z.string(),
   label: z.string(),
@@ -91,15 +49,11 @@ export const DiagnosticCheckSchema = z.object({
 export const DoctorSchema = z.object({
   ranAt: z.number(),
   adapter: z.object({
-    /** The executable the daemon would launch, which is not always the one this checkout builds. */
+    /** The executable this plugin hands the daemon as the provider's command. */
     binary: z.string().nullable(),
     ok: z.boolean(),
     problem: z.string().nullable(),
     checks: z.array(DiagnosticCheckSchema),
-  }),
-  daemon: z.object({
-    diagnostic: z.string().nullable(),
-    error: z.string().nullable(),
   }),
 });
 
@@ -232,16 +186,13 @@ export const readSubagent = defineRpc({
   output: SubagentTranscriptSchema,
 });
 
-export const UninstallSchema = z.object({
-  removedProvider: z.boolean(),
-  removedState: z.boolean(),
-  detail: z.string(),
-});
+/** Removing the state directory either happens or throws, so what comes back is only what it did. */
+export const RemoveStateSchema = z.object({ detail: z.string() });
 
-export type UninstallPayload = z.output<typeof UninstallSchema>;
+export type RemoveStatePayload = z.output<typeof RemoveStateSchema>;
 
-export const runUninstall = defineRpc({
-  name: "claude-tty.uninstall.run",
-  input: z.object({ removeState: z.boolean() }),
-  output: UninstallSchema,
+export const removeState = defineRpc({
+  name: "claude-tty.state.remove",
+  input: z.object({}),
+  output: RemoveStateSchema,
 });
