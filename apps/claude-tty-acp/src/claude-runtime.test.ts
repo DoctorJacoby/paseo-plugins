@@ -580,7 +580,7 @@ test("delivers the assistant text before an interactive hook prompts", async () 
     },
     requestPermission: async (_request: RequestPermissionRequest): Promise<RequestPermissionResponse> => {
       textWhenAsked.push(...assistantText(updates));
-      return { outcome: { outcome: "selected", optionId: "answer-0" } };
+      return { outcome: { outcome: "selected", optionId: "answer-0-0" } };
     },
   } as AgentSideConnection;
   agent = new ClaudeTtyAgent(connection, {
@@ -1279,7 +1279,7 @@ test("leaves a session running while a card is still waiting on the person who h
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     assert.equal(agent.sessions.get(created.sessionId)?.started, true);
 
-    answer!({ outcome: { outcome: "selected", optionId: "answer-0" } });
+    answer!({ outcome: { outcome: "selected", optionId: "answer-0-0" } });
     const decision = (await question) as { hookSpecificOutput?: { permissionDecision?: string } };
     assert.equal(decision.hookSpecificOutput?.permissionDecision, "allow");
   } finally {
