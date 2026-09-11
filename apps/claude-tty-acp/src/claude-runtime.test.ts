@@ -271,8 +271,8 @@ test("asks through ACP before accepting Claude workspace trust", async () => {
     assert.equal(permissionRequests[0]!.toolCall.title, "Is this a project you created or one you trust?");
     assert.deepEqual(permissionRequests[0]!.toolCall.locations, [{ path: cwd }]);
     assert.deepEqual(permissionRequests[0]!.options, [
-      { optionId: "trust-workspace", name: "Yes, trust this folder", kind: "reject_once" },
       { optionId: "deny-workspace", name: "No, exit", kind: "reject_once" },
+      { optionId: "trust-workspace", name: "Yes, trust this folder", kind: "reject_once" },
     ]);
     assert.deepEqual((spawned as unknown as FakePty).writes, ["\u001b[B", "\r", "\u001b[200~hello \u001b[201~", "\r"]);
     await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
@@ -2346,8 +2346,8 @@ test("asks through ACP before accepting Claude's bypass permissions disclaimer",
     await waitFor(() => permissionRequests.length === 1 && spawned !== null && spawned.writes.length === 4);
     assert.equal(permissionRequests[0]!.toolCall.title, "Run Claude Code without asking permission for anything?");
     assert.deepEqual(permissionRequests[0]!.options, [
-      { optionId: "accept-bypass", name: "Yes, I accept", kind: "reject_once" },
       { optionId: "deny-bypass", name: "No, exit", kind: "reject_once" },
+      { optionId: "accept-bypass", name: "Yes, I accept", kind: "reject_once" },
     ]);
     assert.deepEqual((spawned as unknown as FakePty).writes, ["\u001b[B", "\r", "\u001b[200~hello \u001b[201~", "\r"]);
     await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });

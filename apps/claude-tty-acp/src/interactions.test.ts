@@ -265,6 +265,24 @@ test("renders a question the permission pipeline asks about on its own", async (
   });
 });
 
+test("declines consent cards answered with a behaviour and no action id", async () => {
+  const requests: RequestPermissionRequest[] = [];
+  // `paseo permit` sends a bare behaviour, and @getpaseo/plugin 0.8.0 takes the first option whose kind matches it.
+  const answerBare = (behavior: "allow" | "deny") =>
+    connectionWith(async (request) => {
+      requests.push(request);
+      const option = request.options.find((candidate) => (candidate.kind.startsWith("allow") ? "allow" : "deny") === behavior);
+      return option ? selected(option.optionId) : { outcome: { outcome: "cancelled" } };
+    });
+
+  for (const behavior of ["allow", "deny"] as const) {
+    const bridge = new InteractionBridge("session", "/work/repo", answerBare(behavior));
+    assert.equal(await bridge.requestWorkspaceTrust(), false);
+    assert.equal(await bridge.requestBypassPermissions(), false);
+  }
+  assert.equal(requests.length, 4);
+});
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   while (!predicate()) await new Promise((resolve) => setImmediate(resolve));
 }

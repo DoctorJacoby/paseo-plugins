@@ -244,6 +244,7 @@ export class InteractionBridge {
   /**
    * A card for a decision Claude asks for before a session runs, and keeps once it is answered.
    * Both options are declining ones because the answer outlives the session that raised it, and Paseo's automatic permission modes accept allow options without showing anybody a card.
+   * The decline comes first because an answer carrying no action id, which is what `paseo permit deny` sends, takes the first option of its behaviour, and here that is either option.
    */
   private async requestConsent(consent: Consent): Promise<boolean> {
     const response = await this.request({
@@ -256,8 +257,8 @@ export class InteractionBridge {
         locations: [{ path: this.cwd }],
       },
       options: [
-        { ...consent.accept, kind: "reject_once" },
         { ...consent.decline, kind: "reject_once" },
+        { ...consent.accept, kind: "reject_once" },
       ],
     });
     return response.outcome.outcome === "selected" && response.outcome.optionId === consent.accept.optionId;
