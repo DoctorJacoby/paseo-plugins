@@ -10,6 +10,8 @@ export type PersistedSession = {
   cwd: string;
   model: string;
   mode: string;
+  /** Absent in a file written before the effort selector existed, which reads as the default effort. */
+  effort?: string;
   lastActivity: number;
 };
 
@@ -75,6 +77,7 @@ function isPersistedSession(value: unknown): value is PersistedSession {
     path.isAbsolute(record.cwd) &&
     typeof record.model === "string" &&
     typeof record.mode === "string" &&
+    (record.effort === undefined || typeof record.effort === "string") &&
     typeof record.lastActivity === "number"
   );
 }

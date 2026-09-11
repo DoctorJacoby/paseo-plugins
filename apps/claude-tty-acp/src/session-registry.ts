@@ -1,10 +1,24 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { AgentSideConnection, ContentBlock, PromptResponse } from "@agentclientprotocol/sdk";
+import type { AgentSideConnection, ContentBlock, PromptResponse, SessionConfigOption } from "@agentclientprotocol/sdk";
 import { ClaudeRuntime, type RuntimeDependencies } from "./claude-runtime.ts";
 import { discoverCommands } from "./commands.ts";
 import { HookServer } from "./hook-server.ts";
-import { assertModeId, assertModelId, INHERIT_MODEL_ID, migrateModelId, modeState, modelState, offeredModeId } from "./session-options.ts";
+import {
+  assertEffortId,
+  assertModeId,
+  assertModelId,
+  configOptions,
+  EFFORT_CONFIG_ID,
+  INHERIT_EFFORT_ID,
+  INHERIT_MODEL_ID,
+  migrateModelId,
+  MODEL_CONFIG_ID,
+  modeState,
+  modelState,
+  offeredEffortId,
+  offeredModeId,
+} from "./session-options.ts";
 import { SessionLock } from "./session-lock.ts";
 import { type PersistedSession, StateStore } from "./state-store.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
@@ -29,6 +43,7 @@ type SessionOptions = {
   cwd: string;
   model: string;
   mode: string;
+  effort: string;
   persisted: boolean;
 };
 
@@ -39,6 +54,7 @@ export class ClaudeSession {
   private currentClaudeSessionId: string;
   private model: string;
   private mode: string;
+  private effort: string;
   private persisted: boolean;
   private readonly connection: AgentSideConnection;
   private readonly hooks: HookServer;
@@ -66,6 +82,7 @@ export class ClaudeSession {
     this.cwd = options.cwd;
     this.model = options.model;
     this.mode = options.mode;
+    this.effort = options.effort;
     this.persisted = options.persisted;
     this.connection = connection;
     this.hooks = hooks;
@@ -89,6 +106,10 @@ export class ClaudeSession {
     return modeState(this.mode);
   }
 
+  get configOptions(): SessionConfigOption[] {
+    return configOptions(this.model, this.effort);
+  }
+
   prompt(content: ContentBlock[]): Promise<PromptResponse> {
     const activityVersion = this.beginActivity();
     const result = this.exclusive(async () => {
@@ -100,6 +121,7 @@ export class ClaudeSession {
         resume,
         model: this.model,
         mode: this.mode,
+        effort: this.effort,
         translator: this.translator,
         onClaudeSessionChange: async (claudeSessionId) => {
           this.currentClaudeSessionId = claudeSessionId;
@@ -139,7 +161,8 @@ export class ClaudeSession {
       if (this.model === model) return;
       this.model = model;
       if (this.persisted) await this.save();
-      await this.runtime?.reconfigure(this.model, this.mode);
+      await this.runtime?.reconfigure(this.model, this.mode, this.effort);
+      await this.publishConfigOptions();
     });
   }
 
@@ -151,9 +174,35 @@ export class ClaudeSession {
       if (this.mode === mode) return;
       this.mode = mode;
       if (this.persisted) await this.save();
-      await this.runtime?.reconfigure(this.model, this.mode);
+      await this.runtime?.reconfigure(this.model, this.mode, this.effort);
       await this.connection.sessionUpdate({ sessionId: this.id, update: { sessionUpdate: "current_mode_update", currentModeId: mode } });
     });
+  }
+
+  setEffort(effort: string): Promise<void> {
+    if (this.runtime?.turnActive) return Promise.reject(new Error("Cannot change Claude's effort level during an active turn"));
+    return this.exclusive(async () => {
+      assertEffortId(effort);
+      if (this.runtime?.turnActive) throw new Error("Cannot change Claude's effort level during an active turn");
+      if (this.effort === effort) return;
+      this.effort = effort;
+      if (this.persisted) await this.save();
+      await this.runtime?.reconfigure(this.model, this.mode, this.effort);
+      await this.publishConfigOptions();
+    });
+  }
+
+  /**
+   * Both selectors behind one request, which is the only way the plugin provider's bridge ever asks for either.
+   * A running Claude cannot be told to change either one, so the change takes effect by restarting it on the
+   * conversation it was in — which is why an active turn is refused rather than queued.
+   */
+  async setConfigOption(configId: string, value: string | boolean): Promise<SessionConfigOption[]> {
+    if (typeof value !== "string") throw new Error(`Configuration option ${configId} takes the id of an option, not a boolean`);
+    if (configId === MODEL_CONFIG_ID) await this.setModel(value);
+    else if (configId === EFFORT_CONFIG_ID) await this.setEffort(value);
+    else throw new Error(`Unsupported configuration option ${configId}`);
+    return this.configOptions;
   }
 
   cancel(): void {
@@ -167,6 +216,11 @@ export class ClaudeSession {
     await this.lock.release();
   }
 
+  /** The answer to `session/set_config_option` already carries these, so this is for the model a `session/set_model` changed. */
+  private async publishConfigOptions(): Promise<void> {
+    await this.connection.sessionUpdate({ sessionId: this.id, update: { sessionUpdate: "config_option_update", configOptions: this.configOptions } });
+  }
+
   private async save(): Promise<void> {
     const state: PersistedSession = {
       version: 1,
@@ -175,6 +229,7 @@ export class ClaudeSession {
       cwd: this.cwd,
       model: this.model,
       mode: this.mode,
+      effort: this.effort,
       lastActivity: Date.now(),
     };
     await this.stateStore.save(state);
@@ -298,6 +353,7 @@ export class SessionRegistry {
       cwd: path.normalize(cwd),
       model: INHERIT_MODEL_ID,
       mode: "default",
+      effort: INHERIT_EFFORT_ID,
       persisted: false,
     });
   }
@@ -310,6 +366,10 @@ export class SessionRegistry {
     assertModelId(model);
     const mode = offeredModeId(state.mode);
     if (mode !== state.mode) writeLog({ level: "warn", message: `Opened the session in ${mode} mode: this adapter does not offer the ${state.mode} mode it was left in`, sessionId });
+    const effort = offeredEffortId(state.effort);
+    if (state.effort !== undefined && effort !== state.effort) {
+      writeLog({ level: "warn", message: `Opened the session at the default effort: this adapter does not offer the ${state.effort} effort it was left at`, sessionId });
+    }
     if (path.normalize(cwd) !== path.normalize(state.cwd)) throw new Error(`ACP session ${sessionId} belongs to ${state.cwd}, not ${cwd}`);
     const session = this.createSession({
       id: state.acpSessionId,
@@ -317,6 +377,7 @@ export class SessionRegistry {
       cwd: state.cwd,
       model,
       mode,
+      effort,
       persisted: true,
     });
     try {
