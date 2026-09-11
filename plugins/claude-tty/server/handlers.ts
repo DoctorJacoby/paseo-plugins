@@ -14,12 +14,12 @@ import { removeState } from "./uninstall.ts";
 import { readStatus } from "./status.ts";
 import { updateSettings } from "./settings.ts";
 
-export function statusHandler(): Promise<StatusPayload> {
-  return readStatus();
+export function statusHandler(paseo: PaseoApi): Promise<StatusPayload> {
+  return readStatus(paseo);
 }
 
-export function settingsHandler(input: { idleTimeoutMs: number }): Promise<StatusPayload> {
-  return updateSettings(input.idleTimeoutMs);
+export function settingsHandler(paseo: PaseoApi, input: { idleTimeoutMs: number }): Promise<StatusPayload> {
+  return updateSettings(paseo, input.idleTimeoutMs);
 }
 
 export function doctorHandler(): Promise<DoctorPayload> {

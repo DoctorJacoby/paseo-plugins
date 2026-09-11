@@ -10,6 +10,7 @@ import { SessionsSection } from "./sessions.tsx";
 import { SettingsSection } from "./settings.tsx";
 import { SubagentsSection } from "./subagents.tsx";
 import { RemoveStateSection } from "./uninstall.tsx";
+import { LegacyProviderSection } from "./upgrade.tsx";
 import { MAX_CONTENT_WIDTH, fontSize, leading, spacing } from "./theme.ts";
 import { Monospace, ReadingRow, adapterReading, claudeReading } from "./status.tsx";
 import { Card, Row, Section, usePalette } from "./ui.tsx";
@@ -68,6 +69,8 @@ export function ClaudeTtySurface({ theme, layout }: PluginSurfaceProps) {
           </Text>
         </Section>
       )}
+
+      {status.legacyProvider === null ? null : <LegacyProviderSection palette={palette} legacy={status.legacyProvider} />}
 
       <Section palette={palette} title="Adapter">
         <Card palette={palette}>

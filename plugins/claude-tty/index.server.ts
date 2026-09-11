@@ -21,8 +21,8 @@ export default function contribute(server: PluginServerContext) {
   // initialize message, and connects the provider milliseconds later.
   server.registerProvider(claudeTtyProvider());
 
-  server.handle(contracts.getStatus, () => statusHandler());
-  server.handle(contracts.setSettings, (input) => settingsHandler(input));
+  server.handle(contracts.getStatus, (_input, { paseo }) => statusHandler(paseo));
+  server.handle(contracts.setSettings, (input, { paseo }) => settingsHandler(paseo, input));
   server.handle(contracts.runDoctor, () => doctorHandler());
   server.handle(contracts.getDoctor, () => lastDoctorHandler());
   server.handle(contracts.getSessions, (_input, { paseo }) => sessionsHandler(paseo));

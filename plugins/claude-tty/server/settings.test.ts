@@ -3,11 +3,14 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import type { PaseoApi } from "@getpaseo/client";
 import { settingsFilePath } from "./paths.ts";
 import { DEFAULT_IDLE_TIMEOUT_MS, IDLE_TIMEOUT_ENV } from "../shared/settings.ts";
 import { updateSettings } from "./settings.ts";
 
 const pluginRoot = path.resolve(import.meta.dirname, "..");
+/** The host configuration below has no old provider entry, so nothing asks the daemon for its agents. */
+const paseo = {} as PaseoApi;
 
 /**
  * The settings file and the checkout are both read out of the environment, so a test owns both:
@@ -37,7 +40,7 @@ function restore(name: string, value: string | undefined): void {
 
 test("saves the timeout to the plugin's own settings file", async () => {
   await withHost(async () => {
-    const status = await updateSettings(7_200_000);
+    const status = await updateSettings(paseo, 7_200_000);
 
     assert.equal(status.settings.idleTimeoutMs, 7_200_000);
     assert.equal(status.settings.file, settingsFilePath());
@@ -50,7 +53,7 @@ test("saves the timeout to the plugin's own settings file", async () => {
 test("reports an environment that pins the timeout, which the adapter honours over this setting", async () => {
   await withHost(async () => {
     process.env[IDLE_TIMEOUT_ENV] = "60000";
-    const status = await updateSettings(900_000);
+    const status = await updateSettings(paseo, 900_000);
     assert.equal(status.settings.idleTimeoutMs, 900_000);
     assert.equal(status.settings.envOverrideMs, 60_000);
   });
@@ -58,15 +61,15 @@ test("reports an environment that pins the timeout, which the adapter honours ov
 
 test("refuses a timeout that is not a whole number of milliseconds in range", async () => {
   await withHost(async () => {
-    await assert.rejects(updateSettings(-1), /integer from 0/);
-    await assert.rejects(updateSettings(1.5), /integer from 0/);
-    await assert.rejects(updateSettings(2_147_483_648), /integer from 0/);
+    await assert.rejects(updateSettings(paseo, -1), /integer from 0/);
+    await assert.rejects(updateSettings(paseo, 1.5), /integer from 0/);
+    await assert.rejects(updateSettings(paseo, 2_147_483_648), /integer from 0/);
   });
 });
 
 test("reads back the default until something is saved", async () => {
   await withHost(async () => {
-    const status = await updateSettings(DEFAULT_IDLE_TIMEOUT_MS);
+    const status = await updateSettings(paseo, DEFAULT_IDLE_TIMEOUT_MS);
     assert.equal(status.settings.idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS);
   });
 });

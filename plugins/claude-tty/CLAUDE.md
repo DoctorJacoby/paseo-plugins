@@ -90,6 +90,18 @@ On a throwaway 0.8.0 daemon with a fake ACP agent, the unwrapped provider reprod
 That is what the daemon's config-file ACP providers get, since they have no `steerActiveTurn` at all.
 Claude absorbing a message into the running turn, the way it does with text typed into its terminal, would need a path to the adapter that avoids the bridge's prompt admission, and there is none.
 
+## An upgrade leaves the old provider entry behind
+
+Before this plugin registered a provider of its own, it wrote the adapter into the daemon configuration as `agents.providers.traecli`.
+Nothing about the plugin provider touches that entry, so `server/upgrade.ts` looks for it.
+
+The old entry is reported, never removed.
+An agent started on it cannot resume once it is gone, whether those agents are finished with is not the plugin's to judge, and removing it would bring back `paseo.config.patch` for that one purpose.
+`traecli` is also the real Trae CLI's ID, so only an entry whose command's basename is `claude-tty-acp` counts.
+The status RPC carries it with a count of the agents still on it, from `paseo.agents.list()`, which leaves archived agents out; the count is null rather than partial when the listing runs out of budget, since a short count reads as safe to remove.
+The agents are listed only while the entry exists, so the five-second poll costs one configuration read on every other host.
+The app offers **Remove provider** under Settings → Providers only for a provider whose `source` is `custom` (read out of the web UI bundle), which is the old entry and never this plugin's, and that is where the panel and the README send people.
+
 ## Constraints that are not obvious
 
 The daemon's `PATH` is not your shell's.

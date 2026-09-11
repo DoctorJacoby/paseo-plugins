@@ -23,6 +23,16 @@ export const StatusSchema = z.object({
     /** Set when the daemon's environment pins the timeout, which the adapter honours over this setting. */
     envOverrideMs: z.number().int().nonnegative().nullable(),
   }),
+  /** The adapter's entry in the daemon configuration from before this plugin owned the provider, or null. */
+  legacyProvider: z
+    .object({
+      id: z.string(),
+      configFile: z.string(),
+      command: z.string(),
+      /** Agents the daemon still lists on that entry, or null when it did not answer in time to count them all. */
+      agents: z.number().int().nonnegative().nullable(),
+    })
+    .nullable(),
 });
 
 export type StatusPayload = z.output<typeof StatusSchema>;

@@ -32,6 +32,13 @@ paseo plugin add "/absolute/path/to/paseo-plugins/plugins/claude-tty"
 
 Everything is host-local: selecting another host in Paseo shows that host's own answer, and each host is installed separately.
 
+### Upgrading from the `traecli` provider
+
+Earlier versions of this plugin, and the adapter's own README, registered the adapter in the daemon configuration under the provider ID `traecli`. This version registers a provider of its own, `claude-tty`, and `paseo plugin update claude-tty` leaves the old entry where it was, so Paseo lists Claude TTY twice. The panel says so under **Left over from an older install** for as long as the entry is there, with the number of agents still on it.
+
+- **An agent stays on the provider it was started on.** Agents started on `traecli` keep using the old entry and cannot resume once it is gone, so remove it once none are left: under **Settings → Providers** on that host it is the Claude TTY entry with an actions menu, and **Remove provider** deletes it from the configuration. The plugin never removes it itself.
+- **The provider ID changes.** Anything that names `traecli/<model>` — a spawn script, an agent profile, a schedule — goes on starting agents on the old entry, and stops working once it is removed. Point it at `claude-tty/<model>` instead.
+
 ## Settings
 
 The **Suspend idle Claude** setting controls how long a native Claude process remains alive after the session last did anything. It defaults to one hour, and you can choose 15 minutes through 8 hours, or **Never**.

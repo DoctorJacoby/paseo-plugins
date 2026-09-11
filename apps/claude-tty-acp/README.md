@@ -21,72 +21,26 @@ The price is that every native affordance has to be reconstructed from terminal 
 - Node.js 22 or newer
 - pnpm
 - A current Claude Code CLI, authenticated on the same host as the Paseo daemon
-- A Paseo version that supports custom ACP providers
+- Paseo 0.8 or newer
 
 ## Installation
 
-Setup is host-local: the adapter runs wherever the Paseo daemon runs, so repeat every step below on each host that should offer Claude.
+The adapter is installed through the [Claude TTY plugin](../../plugins/claude-tty): `paseo plugin add sleeyax/paseo-plugins --path plugins/claude-tty` clones this repository, builds the adapter, and registers it as the `claude-tty` provider.
+The plugin's README covers installing, updating and removing it, and upgrading a host that registered this adapter in its Paseo configuration by hand.
+
+Setup is host-local: the adapter runs wherever the Paseo daemon runs, so install the plugin on each host that should offer Claude.
 See [Multiple hosts](#multiple-hosts) for what that means in practice.
 
-The [Claude Code plugin](../../plugins/claude-tty) replaces every step below except authentication: `paseo plugin add sleeyax/paseo-plugins --path plugins/claude-tty` clones this repository, builds the adapter, and registers the provider under its own ID.
-Install it instead if you would rather not run the steps below by hand; you still have to authenticate Claude yourself, as in [step 2](#2-authenticate-claude).
-
-### 1. Build the adapter
-
-```sh
-git clone https://github.com/sleeyax/paseo-plugins.git /opt/paseo-plugins
-cd /opt/paseo-plugins
-pnpm install --frozen-lockfile
-pnpm --filter @paseo-plugins/claude-tty-acp build
-/opt/paseo-plugins/apps/claude-tty-acp/bin/claude-tty-acp --diagnose
-```
-
-### 2. Authenticate Claude
+### Authenticate Claude
 
 Run `claude` interactively as the same OS user that runs the Paseo daemon, and complete authentication before using the provider.
 If the daemon runs through systemd, SSH into that account or use an equivalent login shell so Claude writes its credentials into the correct home directory.
-
-### 3. Register the provider
-
-Add the provider to that host's Paseo configuration:
-
-```json
-{
-  "agents": {
-    "providers": {
-      "traecli": {
-        "extends": "acp",
-        "label": "Claude Code (interactive)",
-        "command": [
-          "/opt/paseo-plugins/apps/claude-tty-acp/bin/claude-tty-acp"
-        ],
-        "params": {
-          "supportsMcpServers": false
-        }
-      }
-    }
-  }
-}
-```
-
-Restart or reload the Paseo daemon afterwards.
-
-A few details in that snippet are deliberate:
-
-- `supportsMcpServers: false` refers only to MCP servers that Paseo injects over ACP, which a running interactive Claude process cannot adopt.
-  Claude's own MCP servers are unaffected; it loads them from its usual configuration at startup.
-- The provider ID is `traecli` because Paseo special-cases that ID when listing slash commands, and a configuration entry has no way to ask for the wait itself.
-  See [slash commands need a borrowed provider ID](#slash-commands-need-a-borrowed-provider-id) before choosing another.
-
-`label` is what the agent view displays, so it can say anything.
 
 ### Multiple hosts
 
 Hosts share nothing: no processes, ports, locks, state, credentials, paths, or sessions.
 Selecting a VPS in a client makes that VPS's daemon launch its own adapter and Claude process, read the VPS's Claude configuration and transcripts, and stream ACP back to the client.
 The same provider ID is therefore safe to use everywhere.
-
-The `command` path must be absolute and must exist on the selected host; it is never resolved against the client machine.
 
 ## Environment
 
@@ -159,8 +113,8 @@ Paseo ──ACP over stdio──► claude-tty-acp ──keystrokes over a PTY�
         hooks over loopback HTTP┘    └transcript JSONL, polled
 ```
 
-The daemon starts one adapter process per provider connection, and that process speaks ACP as newline-delimited JSON on stdout while its structured logs go to stderr — and, because the daemon reads stderr and keeps none of it, to `logs/claude-tty-acp.log` under the state directory as well, where every process on the host appends with its pid and a full file is moved aside once.
-Every session of that connection lives in that one process, and each session owns its own `claude` process in a PTY.
+The plugin starts one adapter process per ACP session, and that process speaks ACP as newline-delimited JSON on stdout while its structured logs go to stderr — and, because the daemon reads stderr and keeps none of it, to `logs/claude-tty-acp.log` under the state directory as well, where every process on the host appends with its pid and a full file is moved aside once.
+The session owns its own `claude` process in a PTY.
 
 A session starts empty: `session/new` returns an ID immediately and launches nothing, so a provider probe or an untouched draft never spawns Claude.
 The first prompt launches `claude --session-id <id>` and later launches reuse `claude --resume <id>`, with the model, mode and effort selectors translated into `--model`, `--permission-mode` and `--effort`.
@@ -269,19 +223,16 @@ Runtime directories live in the host's temporary directory, record their owner P
 
 ## Limitations
 
-Claude keeps its own MCP servers, plugins, skills, permissions, and `CLAUDE.md` hierarchy, but MCP servers injected by Paseo over ACP are rejected, as explained in [step 3](#3-register-the-provider).
+Claude keeps its own MCP servers, plugins, skills, permissions, and `CLAUDE.md` hierarchy, but MCP servers injected by Paseo over ACP are rejected, because a running interactive Claude process cannot adopt them.
+Claude's own MCP servers are unaffected; it loads them from its usual configuration at startup.
 
-### Slash commands need a borrowed provider ID
+### Slash commands arrive after the session does
 
 Paseo learns this adapter's slash commands, and with them Claude's skills, from an ACP `available_commands_update` notification.
 The adapter sends it as soon as `session/new` returns, because Paseo drops any session update carrying a session ID it has not received yet.
 
-A draft agent's composer lists commands for an agent that does not exist yet: Paseo spawns a throwaway session, reads the commands back, and closes it, waiting for that first batch only when the provider ID is one it special-cases.
-`traecli` is such an ID, and its client differs from the generic one only by waiting up to 10 seconds, which is why this provider borrows it.
-Under any other ID the composer stays empty until the agent has taken its first turn, after which the live session has the commands cached.
-
-The configured label is what users see, so the borrowed ID stays invisible, but a genuine Trae CLI provider cannot be registered next to it and a future Paseo release may drop the special case.
-None of this applies to the plugin: a plugin provider asks for the same wait through `acpOptions.waitForInitialCommands`, so it carries the ID `claude-tty`.
+A draft agent's composer lists commands for an agent that does not exist yet: Paseo spawns a throwaway session, reads the commands back, and closes it, and it waits for that first batch only when the provider asks it to.
+The plugin asks, through `acpOptions.waitForInitialCommands`, for up to 10 seconds; without the wait the composer stays empty until the agent has taken its first turn, after which the live session has the commands cached.
 
 Related, a draft must carry a model ID that is not literally `default`: Paseo reads `default` as "no model selected" and returns an empty list before the adapter ever launches, which is why the pass-through entry is named `inherit` instead.
 
@@ -403,16 +354,8 @@ The live smoke test asks Claude for a fixed tool-free response and consumes norm
 
 ## Upgrading and uninstalling
 
-Upgrade each host independently, then restart the Paseo daemon:
-
-```sh
-cd /opt/paseo-plugins
-git pull --ff-only
-pnpm install --frozen-lockfile
-pnpm --filter @paseo-plugins/claude-tty-acp build
-```
+The adapter is updated and removed with the plugin, on each host independently; see the [plugin's installation notes](../../plugins/claude-tty/README.md#installation).
+A running adapter process keeps the code it started with, so a rebuilt adapter reaches the sessions started after it.
 
 Persistent session files are versioned and survive upgrades in the configured state directory.
-
-To uninstall, remove the provider from the host's Paseo configuration, restart the daemon, and delete the source checkout once no other app or plugin uses it.
-Remove the host's `claude-tty-acp` state directory only if the session resume mappings are no longer needed.
+Removing the plugin leaves that directory in place; remove it only if the session resume mappings are no longer needed.
