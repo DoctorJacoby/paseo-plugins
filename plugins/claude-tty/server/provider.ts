@@ -4,6 +4,7 @@ import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
 import { PROVIDER_ID, PROVIDER_LABEL } from "../shared/provider.ts";
 import { resolveRepoRoot } from "./checkout.ts";
 import { adapterBinaryPath, adapterEntryPath } from "./paths.ts";
+import { withSteerFallback } from "./steering.ts";
 import { toolCallDetails } from "./tool-details.ts";
 
 /**
@@ -75,7 +76,9 @@ export function claudeTtyProvider(): ProviderRegistration {
         acpOptions: { waitForInitialCommands: true, initialCommandsTimeoutMs: INITIAL_COMMANDS_TIMEOUT_MS },
         transformers: [details.transformer],
       }).connect(request);
-      return details.wrap(connection);
+      // The steer fallback goes innermost, because it stands in for the bridge, so the cards wrap a
+      // connection that already answers a steer.
+      return details.wrap(withSteerFallback(connection, request.capabilities));
     },
   };
 }

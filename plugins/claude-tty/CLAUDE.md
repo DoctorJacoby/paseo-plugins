@@ -75,6 +75,21 @@ It is a wrapper rather than the `{ type: "timeline", item }` that hook can retur
 A vendor notification is handled where it sits in the stream, synchronously, while a `session/update` goes onto a notification lane of its own — measured with a fake in-process agent: an item returned from the hook is emitted *before* the bridge's own item for that call, and the bridge's `unknown` then overwrites it.
 The copy is sent ahead of the update rather than behind it for the same reason: behind, it still arrives first, but only by the depth of that lane, which is whatever one read off the pipe happened to carry.
 
+## A message sent mid-turn needs `prompt.steer` offered, and then turned down
+
+`public-docs/plugins/v0.8/providers.md` says to omit `prompt.steer` when steering is unsupported, so that Paseo can replace the active turn instead. The 0.8.0 daemon does not do that.
+Every plugin session has a `steerActiveTurn`. The app's composer sends a mid-turn message with `activeTurnBehavior: "steer"`, and so does the daemon when an agent reports back to its caller, and both reach that method.
+It checks the session's capabilities first and *throws* `Provider does not support prompt.steer`, so the message is never sent and no turn is replaced.
+Only an *answered* steer that is not `{ type: "steer" }` for the running turn counts as `unavailable`, and `unavailable` is what makes the daemon interrupt the turn and send the message as the next one.
+Upstream `main` behaves the same as of 2026-09-11.
+
+The bridge cannot steer either: `admitPrompt` cancels an active prompt before it forwards any new one, and the adapter refuses a second `session/prompt` while a turn is open.
+So `server/steering.ts` offers the capability, on the connection and on every root `session.opened`, and answers each steer with a `failed` result without forwarding it.
+Paseo's own `provider-direct` example uses the same answer when there is no turn to steer.
+On a throwaway 0.8.0 daemon with a fake ACP agent, the unwrapped provider reproduced the throw, and the wrapped one produced `session/cancel` and then `session/prompt` with the message, with both user messages in the timeline.
+That is what the daemon's config-file ACP providers get, since they have no `steerActiveTurn` at all.
+Claude absorbing a message into the running turn, the way it does with text typed into its terminal, would need a path to the adapter that avoids the bridge's prompt admission, and there is none.
+
 ## Constraints that are not obvious
 
 The daemon's `PATH` is not your shell's.
