@@ -1,7 +1,11 @@
-import type { ModelInfo, SessionModeState, SessionModelState } from "@agentclientprotocol/sdk";
+import type { ModelInfo, SessionConfigOption, SessionConfigSelectOption, SessionModeState, SessionModelState } from "@agentclientprotocol/sdk";
 
 // Paseo reads a literal "default" model id as "no model selected" and then refuses to list a draft agent's commands.
 export const INHERIT_MODEL_ID = "inherit";
+export const INHERIT_EFFORT_ID = "inherit";
+
+export const MODEL_CONFIG_ID = "model";
+export const EFFORT_CONFIG_ID = "effort";
 
 export const MODELS: ModelInfo[] = [
   { modelId: INHERIT_MODEL_ID, name: "Default", description: "Use Claude Code's configured default model" },
@@ -24,7 +28,18 @@ export const MODELS: ModelInfo[] = [
   { modelId: "claude-haiku-4-5", name: "Haiku 4.5", description: "Fastest for quick answers" },
 ];
 
+/** Claude Code's own `--effort` levels, ahead of the one that passes no flag at all. */
+export const EFFORTS: SessionConfigSelectOption[] = [
+  { value: INHERIT_EFFORT_ID, name: "Default", description: "Use Claude Code's configured default effort" },
+  { value: "low", name: "Low", description: "Answer with as little reasoning as the task allows" },
+  { value: "medium", name: "Medium", description: "Claude Code's own balance of reasoning against speed" },
+  { value: "high", name: "High", description: "Reason at length before answering" },
+  { value: "xhigh", name: "Extra high", description: "Reason further still, at the cost of speed" },
+  { value: "max", name: "Max", description: "As much reasoning as the model will do" },
+];
+
 export const MODEL_IDS = MODELS.map((model) => model.modelId);
+export const EFFORT_IDS = EFFORTS.map((effort) => effort.value);
 export const MODE_IDS = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"] as const;
 
 export type ModeId = (typeof MODE_IDS)[number];
@@ -49,12 +64,50 @@ export function modeState(currentModeId: string): SessionModeState {
   };
 }
 
+/**
+ * The same two selectors in ACP's newer vocabulary, which is the only one that carries an effort level.
+ * Paseo's plugin ACP bridge builds both of its pickers from here and reads `models` not at all; the daemon's
+ * own bridge still prefers `models` for the model list and takes the thought levels only from here.
+ * So a session publishes both, and the model values are the `modelId`s verbatim because the daemon falls
+ * back to this option when `session/set_model` fails and matches the choice by value.
+ */
+export function configOptions(currentModelId: string, currentEffortId: string): SessionConfigOption[] {
+  return [
+    {
+      id: MODEL_CONFIG_ID,
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: currentModelId,
+      options: MODELS.map((model) => ({ value: model.modelId, name: model.name, description: model.description })),
+    },
+    {
+      id: EFFORT_CONFIG_ID,
+      name: "Effort",
+      description: "How much reasoning Claude Code puts into a turn",
+      category: "thought_level",
+      type: "select",
+      currentValue: currentEffortId,
+      options: EFFORTS,
+    },
+  ];
+}
+
 export function migrateModelId(value: string): string {
   return value === "default" ? INHERIT_MODEL_ID : value;
 }
 
 export function assertModelId(value: string): void {
   if (!MODEL_IDS.includes(value)) throw new Error(`Unsupported Claude model ${value}`);
+}
+
+export function assertEffortId(value: string): void {
+  if (!EFFORT_IDS.includes(value)) throw new Error(`Unsupported Claude effort level ${value}`);
+}
+
+/** An effort level a persisted session names but this build does not offer, read the way an unoffered mode is. */
+export function offeredEffortId(value: string | undefined): string {
+  return value !== undefined && EFFORT_IDS.includes(value) ? value : INHERIT_EFFORT_ID;
 }
 
 /**

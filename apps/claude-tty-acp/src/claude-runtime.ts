@@ -11,7 +11,7 @@ import { InteractionBridge } from "./interactions.ts";
 import { writeLog } from "./log.ts";
 import { cleanupPromptFiles, materializePrompt } from "./prompt-content.ts";
 import { markRuntimeDirectory, runtimePrefix } from "./runtime-directories.ts";
-import { INHERIT_MODEL_ID } from "./session-options.ts";
+import { INHERIT_EFFORT_ID, INHERIT_MODEL_ID } from "./session-options.ts";
 import { TerminalScreen } from "./terminal-screen.ts";
 import { SubagentWatcher } from "./subagent-watcher.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
@@ -120,6 +120,7 @@ export type RuntimeDependencies = {
   resume?: boolean;
   model?: string;
   mode?: string;
+  effort?: string;
   onClaudeSessionChange?: (claudeSessionId: string) => Promise<void>;
 };
 
@@ -159,6 +160,7 @@ export class ClaudeRuntime {
   private resumeNextLaunch: boolean;
   private model: string;
   private mode: string;
+  private effort: string;
   private readonly onClaudeSessionChange: ((claudeSessionId: string) => Promise<void>) | undefined;
   private readonly interactions: InteractionBridge;
   private readonly translator: TranscriptTranslator;
@@ -203,6 +205,7 @@ export class ClaudeRuntime {
     this.resumeNextLaunch = dependencies.resume === true;
     this.model = dependencies.model ?? INHERIT_MODEL_ID;
     this.mode = dependencies.mode ?? "default";
+    this.effort = dependencies.effort ?? INHERIT_EFFORT_ID;
     this.onClaudeSessionChange = dependencies.onClaudeSessionChange;
     this.interactions = new InteractionBridge(sessionId, cwd, connection);
     this.spawnPty = dependencies.spawnPty ?? nodePty.spawn;
@@ -285,10 +288,12 @@ export class ClaudeRuntime {
     }
   }
 
-  async reconfigure(model: string, mode: string): Promise<void> {
-    if (this.turn) throw new Error("Cannot change Claude model or mode during an active turn");
+  /** Claude takes its model and its effort at launch and offers no way to change either after, so this restarts it on the same conversation. */
+  async reconfigure(model: string, mode: string, effort: string): Promise<void> {
+    if (this.turn) throw new Error("Cannot change Claude model, mode or effort during an active turn");
     this.model = model;
     this.mode = mode;
+    this.effort = effort;
     if (!this.pty) return;
     await this.stopForRestart();
     await this.ensureStarted();
@@ -370,7 +375,7 @@ export class ClaudeRuntime {
       ? ["--resume", this.currentClaudeSessionId]
       : ["--session-id", this.currentClaudeSessionId];
     try {
-      this.pty = this.spawnPty(claudeBin, [...sessionArgs, ...selectionArgs(this.model, this.mode), "--settings", settingsPath], {
+      this.pty = this.spawnPty(claudeBin, [...sessionArgs, ...selectionArgs(this.model, this.mode, this.effort), "--settings", settingsPath], {
         name: "xterm-256color",
         cols: 120,
         rows: 40,
@@ -983,10 +988,11 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function selectionArgs(model: string, mode: string): string[] {
+function selectionArgs(model: string, mode: string, effort: string): string[] {
   const args: string[] = [];
   if (model !== INHERIT_MODEL_ID) args.push("--model", model);
   if (mode !== "default") args.push("--permission-mode", mode);
+  if (effort !== INHERIT_EFFORT_ID) args.push("--effort", effort);
   return args;
 }
 

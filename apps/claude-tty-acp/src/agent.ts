@@ -12,6 +12,8 @@ import {
   type NewSessionResponse,
   type PromptRequest,
   type PromptResponse,
+  type SetSessionConfigOptionRequest,
+  type SetSessionConfigOptionResponse,
   type SetSessionModeRequest,
   type SetSessionModelRequest,
 } from "@agentclientprotocol/sdk";
@@ -69,7 +71,7 @@ export class ClaudeTtyAgent implements Agent {
     // The client first learns this session id from the response below, so an update sent any earlier has nowhere to land.
     setImmediate(() => void this.publishCommands(session));
     writeLog({ level: "info", message: "Created lazy ACP session", sessionId: session.id, cwd: session.cwd });
-    return { sessionId: session.id, models: session.models, modes: session.modes };
+    return { sessionId: session.id, models: session.models, modes: session.modes, configOptions: session.configOptions };
   }
 
   async authenticate(_params: AuthenticateRequest): Promise<Record<string, never>> {
@@ -82,7 +84,7 @@ export class ClaudeTtyAgent implements Agent {
     this.workspaces?.watch(session.id, session.cwd);
     await session.emitCommands();
     writeLog({ level: "info", message: "Loaded persisted ACP session", sessionId: params.sessionId, cwd: params.cwd });
-    return { models: session.models, modes: session.modes };
+    return { models: session.models, modes: session.modes, configOptions: session.configOptions };
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<Record<string, never>> {
@@ -92,11 +94,18 @@ export class ClaudeTtyAgent implements Agent {
     return {};
   }
 
+  /** Kept beside `setSessionConfigOption` because the daemon's own ACP bridge asks for a model this way first and only falls back to the config option. */
   async unstable_setSessionModel(params: SetSessionModelRequest): Promise<Record<string, never>> {
     const session = this.sessions.get(params.sessionId);
     if (!session) throw new Error(`Session ${params.sessionId} not found`);
     await session.setModel(params.modelId);
     return {};
+  }
+
+  async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
+    const session = this.sessions.get(params.sessionId);
+    if (!session) throw new Error(`Session ${params.sessionId} not found`);
+    return { configOptions: await session.setConfigOption(params.configId, params.value) };
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {

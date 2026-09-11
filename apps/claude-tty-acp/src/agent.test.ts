@@ -56,6 +56,28 @@ test("creates probe sessions without starting a runtime", async () => {
   await agent.close();
 });
 
+test("publishes the model and the effort level as config options too", async () => {
+  const agent = createAgent();
+  const created = await agent.newSession({ cwd: "/work/probe", mcpServers: [] });
+  const model = created.configOptions?.find((option) => option.category === "model");
+  const effort = created.configOptions?.find((option) => option.category === "thought_level");
+
+  // The plugin provider's ACP bridge reads no other model surface, and the daemon's own matches its fallback by value.
+  assert.equal(model?.type, "select");
+  assert.equal(model?.currentValue, "inherit");
+  assert.deepEqual(
+    model?.type === "select" ? model.options.map((option) => ("group" in option ? option.group : option.value)) : [],
+    created.models?.availableModels.map((available) => available.modelId),
+  );
+  assert.equal(effort?.type, "select");
+  assert.equal(effort?.currentValue, "inherit");
+  assert.deepEqual(
+    effort?.type === "select" ? effort.options.map((option) => ("group" in option ? option.group : option.value)) : [],
+    ["inherit", "low", "medium", "high", "xhigh", "max"],
+  );
+  await agent.close();
+});
+
 test("rejects injected MCP servers", async () => {
   const agent = createAgent();
   await assert.rejects(

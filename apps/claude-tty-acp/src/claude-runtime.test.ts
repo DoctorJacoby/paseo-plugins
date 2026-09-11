@@ -392,6 +392,49 @@ test("applies native model and mode controls and restarts an idle session", asyn
   }
 });
 
+test("launches Claude at the effort a config option chose and restarts an idle session to change it", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-effort-test-"));
+  const spawns: SpawnRecord[] = [];
+  const updates: SessionNotification[] = [];
+  let agent!: ClaudeTtyAgent;
+  const spawnPty = (file: string, args: string[], options: IPtyForkOptions): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    let pty!: FakePty;
+    pty = new FakePty(4200 + spawns.length, (data) => {
+      if (data === "") setImmediate(() => pty.emitExit());
+    });
+    spawns.push({ file, args, options, pty });
+    const idFlag = args.includes("--resume") ? "--resume" : "--session-id";
+    const sessionId = args[args.indexOf(idFlag) + 1];
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(createConnection(updates), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, contextRefreshTimeoutMs: 0 });
+
+  try {
+    const created = await agent.newSession({ cwd: "/work/effort", mcpServers: [] });
+    const set = await agent.setSessionConfigOption({ sessionId: created.sessionId, configId: "effort", value: "xhigh" });
+    assert.equal(set.configOptions.find((option) => option.category === "thought_level")?.currentValue, "xhigh");
+
+    const turn = agent.prompt({ sessionId: created.sessionId, prompt: [{ type: "text", text: "think it over" }] });
+    await waitFor(() => spawns.length === 1 && spawns[0]!.pty.writes.length === 2);
+    assert.deepEqual(spawns[0]!.args.slice(0, 4), ["--session-id", created.sessionId, "--effort", "xhigh"]);
+    await assert.rejects(agent.setSessionConfigOption({ sessionId: created.sessionId, configId: "effort", value: "low" }), /active turn/);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: created.sessionId, last_assistant_message: "thought" });
+    await turn;
+
+    await agent.setSessionConfigOption({ sessionId: created.sessionId, configId: "model", value: "claude-opus-5" });
+    assert.equal(spawns.length, 2);
+    assert.deepEqual(spawns[1]!.args.slice(0, 6), ["--resume", created.sessionId, "--model", "claude-opus-5", "--effort", "xhigh"]);
+    assert.equal(updates.filter((update) => update.update.sessionUpdate === "config_option_update").length, 2);
+
+    await assert.rejects(agent.setSessionConfigOption({ sessionId: created.sessionId, configId: "verbosity", value: "loud" }), /Unsupported configuration option verbosity/);
+    await assert.rejects(agent.setSessionConfigOption({ sessionId: created.sessionId, configId: "model", type: "boolean", value: true }), /not a boolean/);
+  } finally {
+    await agent.close();
+    await rm(runtimeRoot, { force: true, recursive: true });
+  }
+});
+
 test("suspends an idle native process and resumes it on the next prompt", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-idle-test-"));
   const spawns: SpawnRecord[] = [];
