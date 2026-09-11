@@ -214,20 +214,32 @@ It is optional in the type because a host older than 0.7 passes none, so the but
 `openSurface` and `openSettings` are the other half and are **not** on a surface's props: they live on command contexts and on the client entry's context.
 So the panel cannot send anyone to this plugin's own settings screen, and the Command Center item is what does.
 
-## A subagent is not a session, and its work is in another file
+## A subagent is a subsession, and the daemon is strict about how one is opened
 
-Claude writes a subagent's turns to `<projects>/<claude session id>/subagents/agent-<agent id>.jsonl`, never into the session's own transcript, which carries only the launch and — for an asynchronous agent — a `<task-notification>` saying it stopped.
-So both files are read: the session's for the launch metadata Claude leaves beside the tool result (`toolUseResult.agentId`, and `status: "async_launched"` for one that has only started), and the subagent's for anything it actually did.
-Claude also writes an `agent-<agent id>.meta.json` beside each transcript carrying the description, the tool use that launched it and its `spawnDepth`, which is the only thing that names a subagent another subagent launched, because the session's transcript never sees one.
-An asynchronous launch answers its launcher immediately, so a tool result is not proof the agent finished; the notification is.
-Claude writes that notification into the turn it wakes for when the agent reports to an idle session, and into a `queued_command` attachment when it reports to one that is mid-turn, so both are read; a session whose process stops first writes neither:
-a launch left open in a finished transcript says only that nobody was there to hear the end of it, never that the agent is still working.
+A subagent is a loop inside its session's Claude process rather than an ACP session, so `runAcpProvider` has no way to describe one: it maps ACP session updates and nothing in that protocol carries a child session.
+0.8's `session.subsession` is what makes one showable anyway, and it is negotiated in `server/subsessions.ts`, a wrapper around the connection the shim returns, the way `server/permission-bridge.ts` wraps it for the two permissions that ask a person something.
+The wrapper adds the capability to what the connection reports *and* to every `session.opened` the adapter emits, because the daemon checks both and they are never allowed to disagree.
 
-The panel lists only open sessions, because a subagent is a loop inside its session's Claude process and stops with it, and it is not an ACP session or a Paseo agent, so the paragraph above about opening an agent applies to it twice over.
-An asynchronous launch with no notification after it reads as running in the panel, and nothing on disk says whether the Claude process behind it is still the one that launched it.
-So an agent launched before a suspension or a model change stays listed as running until its session closes, with the last-step label as the only sign, while the adapter closes its card in the conversation because it knows the process stopped.
-Both files are read incrementally from module scope, the way the adapter reads them, because each runs to megabytes and the panel polls: what is new is parsed onto what was already read, a rewrite is noticed by comparing the head of the file rather than its length, and only the tail of steps the panel shows is kept.
-Module scope lives as long as the plugin process, so everything it holds is keyed by the session directory it was read for and dropped as soon as that session is no longer open.
+A child is a `session.opened` carrying `parentSessionId`, and the daemon does not make it an agent: `PluginAgentClient.acceptChild` attaches it to the *root* session as a `ProviderSubagentDescriptor`, which is the same surface OpenCode's subagents use — a title, a description, a cwd, a status, and a timeline of its own, fetched over `agent.provider_subagents.*`.
+There is no tab, no row in `paseo ls`, and no CLI for it at all; the app is the only client that shows one.
+A child's `toolCallId` stays null whatever we do, because `acceptChild` builds its upsert from the `session.opened` alone, so nothing links the descriptor to the card in the conversation.
+`restoration: "parent"` is what says the child persists nothing: closing it then removes it locally instead of sending `session.close` to a session the adapter has never heard of.
+`capabilities: []` is the honest reading of a subagent — the daemon offers a child session no way to be prompted, and the agent behind it answers to the one prompt its launcher handed it.
+
+Two ways of getting it wrong take the **whole connection** down, and with it every agent on this provider (verified against a 0.8.0 daemon with a throwaway plugin): a child whose parent's `session.opened` did not carry the capability, and a child for a parent the daemon has already forgotten.
+It forgets one as it accepts a `session.close` and again as it publishes `session.closed`, so the wrapper tracks a parent between those two points and emits nothing about it outside them — and closes that parent's children *first*, on the way past, because a child left open then would go on saying it was working for as long as the agent existed.
+
+What a subagent did is read off the disk, because that is the only place it is written: Claude writes a subagent's turns to `<projects>/<claude session id>/subagents/agent-<agent id>.jsonl`, never into the session's own transcript.
+Which Claude session an ACP session is on is in the adapter's state file and nowhere else, and it moves under a compaction, so it is resolved on every poll rather than once.
+Beside each transcript is an `agent-<agent id>.meta.json` carrying `agentType`, `description`, `spawnDepth` and — the reason it is read at all — the `toolUseId` of the call that launched it.
+
+That id is the whole lifecycle. **The session's own transcript is not read here at all**: a launch left open in it says only that nobody was there to hear the end of it, never that the agent is still working, which is the bug the old panel had.
+The tool call in the session's conversation says it properly, because the adapter closes one when the agent reports *and* when the Claude process it ran in stops, and the wrapper sees every `timeline.item` on its way to the daemon.
+So a child opens while its launch is running and closes when that launch does — completed as a clean finish, anything else with an error, which is what a descriptor can say.
+An agent whose launch has already ended when its transcript is found is history and is skipped; an agent another subagent launched names a `toolUseId` the session's conversation never mentions, so it is skipped too and stays on its spawner's card.
+
+The transcript is read incrementally, the way the adapter reads the session's own, because it runs to megabytes and this polls once a second per open session.
+Nothing rewrites a subagent's transcript, so a rewind can only be a truncation, and the tool calls sent as running are forgotten with it; the ones still open when the agent stops are canceled rather than left running.
 
 ## A module's directory picks its bundle
 

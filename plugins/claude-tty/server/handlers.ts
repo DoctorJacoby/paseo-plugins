@@ -4,12 +4,9 @@ import type {
   RemoveStatePayload,
   SessionsPayload,
   StatusPayload,
-  SubagentsPayload,
-  SubagentTranscriptPayload,
 } from "../shared/contracts.ts";
 import { lastDoctorReport, runDoctor } from "./doctor.ts";
 import { listSessions, quarantineSession, releaseLock, releaseStaleLocks, stopSession } from "./sessions.ts";
-import { listSubagents, readSubagentTranscript } from "./subagents.ts";
 import { removeState } from "./uninstall.ts";
 import { readStatus } from "./status.ts";
 
@@ -35,14 +32,6 @@ export function quarantineSessionHandler(paseo: PaseoApi, input: { id: string })
 
 export function stopSessionHandler(paseo: PaseoApi, input: { id: string }): Promise<SessionsPayload> {
   return stopSession(paseo, input.id);
-}
-
-export function subagentsHandler(): Promise<SubagentsPayload> {
-  return listSubagents();
-}
-
-export function readSubagentHandler(input: { sessionId: string; agentId: string }): Promise<SubagentTranscriptPayload> {
-  return readSubagentTranscript(input.sessionId, input.agentId);
 }
 
 export function lastDoctorHandler(): DoctorPayload | null {
