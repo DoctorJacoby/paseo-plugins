@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { SETTINGS_ID } from "../shared/settings.ts";
 
 export type Env = Record<string, string | undefined>;
 
@@ -7,13 +8,18 @@ export const PLUGIN_ID = "claude-tty";
 export const ADAPTER_BINARY_NAME = "claude-tty-acp";
 export const ADAPTER_ENTRY_NAME = "cli.js";
 
-/**
- * The daemon configuration, which is the only record of where this plugin was installed from.
- * Mirrors the daemon's own `resolvePaseoHome`, whose `PASEO_HOME` the plugin process inherits.
- */
-export function daemonConfigPath(env: Env = process.env): string {
+/** How the adapter is told which settings document to read; its own `parseCliArgs` names the flag. */
+export const ADAPTER_SETTINGS_FLAG = "--settings-file";
+
+/** Mirrors the daemon's own `resolvePaseoHome`, whose `PASEO_HOME` the plugin process inherits. */
+export function paseoHome(env: Env = process.env): string {
   const home = env.PASEO_HOME?.trim() || "~/.paseo";
-  return path.join(path.resolve(expandHome(home, env)), "config.json");
+  return path.resolve(expandHome(home, env));
+}
+
+/** The daemon configuration, which is the only record of where this plugin was installed from. */
+export function daemonConfigPath(env: Env = process.env): string {
+  return path.join(paseoHome(env), "config.json");
 }
 
 function expandHome(input: string, env: Env): string {
@@ -31,12 +37,12 @@ export function defaultStateDirectory(env: Env = process.env): string {
 }
 
 /**
- * Plugin-owned persistence, the convention the root README documents for every plugin here.
- * Mirrored by `settingsFilePath` in `apps/claude-tty-acp/src/idle-timeout.ts`, which reads this file.
+ * Where the daemon's own plugin settings store keeps this plugin's document. The layout is the
+ * daemon's, read here rather than asked for: the initialize message carries `settingsDirectory` but
+ * the SDK hands the server runtime no way to read a value back out of the store it registered.
  */
 export function settingsFilePath(env: Env = process.env): string {
-  const base = env.XDG_CACHE_HOME?.trim() || path.join(env.HOME || os.homedir(), ".cache");
-  return path.join(base, "paseo-plugins", PLUGIN_ID, "settings.json");
+  return path.join(paseoHome(env), "plugin-settings", PLUGIN_ID, `${SETTINGS_ID}.json`);
 }
 
 export function sessionsDirectory(stateDirectory: string): string {
@@ -87,6 +93,15 @@ export function adapterBinaryPath(repoRoot: string): string {
 /** The binary is a shell wrapper around this file, so its absence is what "not built yet" means. */
 export function adapterEntryPath(repoRoot: string): string {
   return path.join(adapterDirectory(repoRoot), "dist", ADAPTER_ENTRY_NAME);
+}
+
+/**
+ * What the provider spawns. The adapter is a detached process with no way to reach the host's
+ * settings store, so it is handed the document's path and re-reads it at every suspension, which is
+ * what lets a change reach sessions that are already connected.
+ */
+export function adapterCommand(repoRoot: string, env: Env = process.env): [string, ...string[]] {
+  return [adapterBinaryPath(repoRoot), ADAPTER_SETTINGS_FLAG, settingsFilePath(env)];
 }
 
 /** Where a bare command name would be found, in the order a shell would try. */

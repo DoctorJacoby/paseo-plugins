@@ -1,5 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import * as contracts from "./shared/contracts.ts";
+import { settingsDocument } from "./shared/settings.ts";
 import { claudeTtyProvider } from "./server/provider.ts";
 import {
   doctorHandler,
@@ -10,7 +11,6 @@ import {
   releaseStaleLocksHandler,
   removeStateHandler,
   sessionsHandler,
-  settingsHandler,
   statusHandler,
   stopSessionHandler,
   subagentsHandler,
@@ -21,8 +21,11 @@ export default function contribute(server: PluginServerContext) {
   // initialize message, and connects the provider milliseconds later.
   server.registerProvider(claudeTtyProvider());
 
+  // The store this registers is the settings screen's whole backing; the plugin only reads the path
+  // it writes to, and hands that to the adapter.
+  server.registerSettings(settingsDocument);
+
   server.handle(contracts.getStatus, (_input, { paseo }) => statusHandler(paseo));
-  server.handle(contracts.setSettings, (input, { paseo }) => settingsHandler(paseo, input));
   server.handle(contracts.runDoctor, () => doctorHandler());
   server.handle(contracts.getDoctor, () => lastDoctorHandler());
   server.handle(contracts.getSessions, (_input, { paseo }) => sessionsHandler(paseo));

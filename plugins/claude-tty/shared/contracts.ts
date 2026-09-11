@@ -1,6 +1,5 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
-import { MAX_IDLE_TIMEOUT_MS } from "./settings.ts";
 
 export const StatusSchema = z.object({
   /** The checkout this plugin was installed from, or null when it could not be identified. */
@@ -16,11 +15,11 @@ export const StatusSchema = z.object({
     claude: z.string().nullable(),
   }),
   stateDirectory: z.string(),
+  /** What the settings screen cannot see for itself: where the host keeps the document, and what overrides it. */
   settings: z.object({
-    idleTimeoutMs: z.number().int().nonnegative(),
-    /** Where the value is stored, which is the plugin's own settings file rather than the daemon config. */
+    /** The document the host settings store owns, which is also the path the adapter is handed. */
     file: z.string(),
-    /** Set when the daemon's environment pins the timeout, which the adapter honours over this setting. */
+    /** Set when the daemon's environment pins the timeout, which the adapter honours over the setting. */
     envOverrideMs: z.number().int().nonnegative().nullable(),
   }),
   /** The adapter's entry in the daemon configuration from before this plugin owned the provider, or null. */
@@ -40,12 +39,6 @@ export type StatusPayload = z.output<typeof StatusSchema>;
 export const getStatus = defineRpc({
   name: "claude-tty.status",
   input: z.object({}),
-  output: StatusSchema,
-});
-
-export const setSettings = defineRpc({
-  name: "claude-tty.settings.set",
-  input: z.object({ idleTimeoutMs: z.number().int().nonnegative().max(MAX_IDLE_TIMEOUT_MS) }),
   output: StatusSchema,
 });
 

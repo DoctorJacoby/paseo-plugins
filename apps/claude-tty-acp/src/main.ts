@@ -1,18 +1,19 @@
 import { Readable, Writable } from "node:stream";
 import { AgentSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
 import { ClaudeTtyAgent } from "./agent.ts";
-import { readIdleTimeout, settingsFilePath } from "./idle-timeout.ts";
+import { readIdleTimeout, useSettingsFile } from "./idle-timeout.ts";
 import { enableLogFile, writeLog } from "./log.ts";
 import { cleanupAbandonedRuntimeDirectories } from "./runtime-directories.ts";
 
-export async function runAcpServer(): Promise<void> {
+export async function runAcpServer(settingsFile: string | null): Promise<void> {
   // The daemon reads stderr and keeps none of it, so the server also writes its log to disk.
   // A host that cannot hold the file has already said so on stderr, and still serves its sessions.
   const logFile = enableLogFile();
   if (logFile) writeLog({ level: "info", message: "Writing the adapter log to a file as well", file: logFile });
   await cleanupAbandonedRuntimeDirectories();
+  useSettingsFile(settingsFile);
   // Only reported here; each suspension reads the value again so a change in Paseo reaches sessions that are already connected.
-  writeLog({ level: "info", message: "Resolved the idle timeout", idleTimeoutMs: await readIdleTimeout(), settingsFile: settingsFilePath() });
+  writeLog({ level: "info", message: "Resolved the idle timeout", idleTimeoutMs: await readIdleTimeout(), settingsFile });
   const input = Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>;
   const output = Writable.toWeb(process.stdout) as WritableStream<Uint8Array>;
   let agent: ClaudeTtyAgent | null = null;

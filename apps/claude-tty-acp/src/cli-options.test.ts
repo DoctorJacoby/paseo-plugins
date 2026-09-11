@@ -3,7 +3,20 @@ import test from "node:test";
 import { parseCliArgs } from "./cli-options.ts";
 
 test("serves ACP when no CLI flags are passed", () => {
-  assert.deepEqual(parseCliArgs([]), { kind: "serve" });
+  assert.deepEqual(parseCliArgs([]), { kind: "serve", settingsFile: null });
+});
+
+test("takes the settings document the plugin names at spawn", () => {
+  assert.deepEqual(parseCliArgs(["--settings-file", "/paseo/plugin-settings/claude-tty/settings.json"]), {
+    kind: "serve",
+    settingsFile: "/paseo/plugin-settings/claude-tty/settings.json",
+  });
+});
+
+test("rejects --settings-file without a path", () => {
+  assert.throws(() => parseCliArgs(["--settings-file"]), /Unknown arguments/);
+  assert.throws(() => parseCliArgs(["--settings-file", "--json"]), /Unknown arguments/);
+  assert.throws(() => parseCliArgs(["--settings-file", ""]), /Unknown arguments/);
 });
 
 test("prints help and version without starting ACP", () => {

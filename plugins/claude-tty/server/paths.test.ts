@@ -3,12 +3,15 @@ import path from "node:path";
 import test from "node:test";
 import {
   adapterBinaryPath,
+  adapterCommand,
   adapterEntryPath,
   adapterManifestPath,
   claudeCandidates,
+  daemonConfigPath,
   defaultStateDirectory,
   executableCandidates,
   repoRootFromPluginPath,
+  settingsFilePath,
   subagentsDirectory,
   transcriptPath,
 } from "./paths.ts";
@@ -29,6 +32,21 @@ test("derives the checkout and its adapter from the installed plugin path", () =
   assert.equal(adapterManifestPath(root), "/opt/paseo-plugins/apps/claude-tty-acp/package.json");
   assert.equal(adapterBinaryPath(root), "/opt/paseo-plugins/apps/claude-tty-acp/bin/claude-tty-acp");
   assert.equal(adapterEntryPath(root), "/opt/paseo-plugins/apps/claude-tty-acp/dist/cli.js");
+});
+
+test("finds the host's settings document beside the daemon configuration", () => {
+  const env = { PASEO_HOME: "/srv/paseo" };
+  assert.equal(daemonConfigPath(env), "/srv/paseo/config.json");
+  assert.equal(settingsFilePath(env), "/srv/paseo/plugin-settings/claude-tty/settings.json");
+  assert.equal(settingsFilePath({ HOME: "/home/paseo" }), "/home/paseo/.paseo/plugin-settings/claude-tty/settings.json");
+});
+
+test("spawns the adapter with the settings document it is to read", () => {
+  assert.deepEqual(adapterCommand("/opt/paseo-plugins", { PASEO_HOME: "/srv/paseo" }), [
+    "/opt/paseo-plugins/apps/claude-tty-acp/bin/claude-tty-acp",
+    "--settings-file",
+    "/srv/paseo/plugin-settings/claude-tty/settings.json",
+  ]);
 });
 
 test("strips a trailing separator from the installed plugin path", () => {

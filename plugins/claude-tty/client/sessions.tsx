@@ -1,4 +1,6 @@
+import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
+import { SettingsCard, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -8,14 +10,15 @@ import { groupSessions, lastActiveLabel } from "../shared/sessions.ts";
 import { fontSize, leading, spacing, type Palette } from "./theme.ts";
 import { ConfirmButton } from "./confirm.tsx";
 import { Monospace, ReadingRow, type Reading } from "./status.tsx";
-import { Card, Row, Section, pressable } from "./ui.tsx";
+import { Button, pressable } from "./ui.tsx";
 
 export const SESSIONS_QUERY_KEY = ["claude-tty", "sessions"];
 const REFETCH_MS = 10_000;
 
 type Session = SessionsPayload["sessions"][number];
+type Navigation = PluginSurfaceProps["navigation"];
 
-export function SessionsSection({ palette }: { palette: Palette }) {
+export function SessionsSection({ palette, navigation }: { palette: Palette; navigation: Navigation }) {
   const [showOlder, setShowOlder] = useState(false);
   const queryClient = useQueryClient();
   const getSessions = useRpc(contracts.getSessions);
@@ -40,47 +43,48 @@ export function SessionsSection({ palette }: { palette: Palette }) {
   const stopping = stop.isPending ? stop.variables : null;
   const groups = payload === null ? null : groupSessions(payload.sessions, payload.now);
 
-  const row = (session: Session, now: number, divided: boolean) => (
+  const row = (session: Session, now: number) => (
     <ReadingRow
       key={session.id}
       palette={palette}
       title={title(session)}
       reading={reading(session, now)}
-      divided={divided}
       trailing={
-        <SessionAction
-          palette={palette}
-          session={session}
-          busy={busy}
-          stopping={session.id === stopping}
-          onRelease={() => release.mutate(session.id)}
-          onQuarantine={() => quarantine.mutate(session.id)}
-          onStop={() => stop.mutate(session.id)}
-        />
+        <View style={{ flexDirection: "row", alignItems: "center", gap: spacing[2] }}>
+          <OpenAgent palette={palette} navigation={navigation} agent={session.agent} />
+          <SessionAction
+            palette={palette}
+            session={session}
+            busy={busy}
+            stopping={session.id === stopping}
+            onRelease={() => release.mutate(session.id)}
+            onQuarantine={() => quarantine.mutate(session.id)}
+            onStop={() => stop.mutate(session.id)}
+          />
+        </View>
       }
     />
   );
 
   return (
-    <Section palette={palette} title="Sessions">
+    <SettingsSection title="Sessions">
       {groups === null || payload === null ? null : payload.sessions.length === 0 ? (
-        <Card palette={palette}>
-          <Row palette={palette} title="No saved sessions" hint={payload.stateDirectory} dimmed />
-        </Card>
+        <SettingsCard>
+          <SettingsRow label="No saved sessions" hint={payload.stateDirectory} />
+        </SettingsCard>
       ) : (
-        <Card palette={palette}>
-          {groups.visible.map((session, index) => row(session, payload.now, index > 0))}
+        <SettingsCard>
+          {groups.visible.map((session) => row(session, payload.now))}
           {groups.older.length === 0 ? null : (
             <OlderSessions
               palette={palette}
               count={groups.older.length}
               open={showOlder}
-              divided={groups.visible.length > 0}
               onPress={() => setShowOlder(!showOlder)}
             />
           )}
-          {showOlder ? groups.older.map((session) => row(session, payload.now, true)) : null}
-        </Card>
+          {showOlder ? groups.older.map((session) => row(session, payload.now)) : null}
+        </SettingsCard>
       )}
 
       {payload?.problem ? <Monospace palette={palette} text={payload.problem} /> : null}
@@ -99,7 +103,27 @@ export function SessionsSection({ palette }: { palette: Palette }) {
         The adapter clears its own on exit and recovers one left by a process that has died, so
         releasing by hand is only for a lock that outlived its process and is still in the way.
       </Text>
-    </Section>
+    </SettingsSection>
+  );
+}
+
+/**
+ * Reveals the agent holding this session. `navigation` is undefined on a host older than 0.7, and a
+ * session the daemon no longer lists an agent for has nothing to reveal; both hide the button rather
+ * than offering one that does nothing.
+ */
+function OpenAgent({
+  palette,
+  navigation,
+  agent,
+}: {
+  palette: Palette;
+  navigation: Navigation;
+  agent: Session["agent"];
+}) {
+  if (!navigation || agent === null) return null;
+  return (
+    <Button palette={palette} label="Open" variant="ghost" onPress={() => navigation.openAgent({ agentId: agent.id })} />
   );
 }
 
@@ -108,13 +132,11 @@ function OlderSessions({
   palette,
   count,
   open,
-  divided,
   onPress,
 }: {
   palette: Palette;
   count: number;
   open: boolean;
-  divided: boolean;
   onPress: () => void;
 }) {
   return (
@@ -126,12 +148,7 @@ function OlderSessions({
         backgroundColor: hovered || pressed ? palette.surface2 : "transparent",
       }))}
     >
-      <Row
-        palette={palette}
-        title={`${open ? "Hide" : "Show"} ${count} older session${count === 1 ? "" : "s"}`}
-        divided={divided}
-        dimmed
-      />
+      <SettingsRow label={`${open ? "Hide" : "Show"} ${count} older session${count === 1 ? "" : "s"}`} />
     </Pressable>
   );
 }
@@ -162,6 +179,7 @@ function SessionAction({
         palette={palette}
         label="Move aside"
         confirmLabel="Move it aside"
+        detail="Renames the unreadable session file so it stops being read. Nothing that can still be resumed is touched."
         disabled={busy}
         onConfirm={onQuarantine}
       />
@@ -170,7 +188,14 @@ function SessionAction({
   if (session.lock === null) return null;
   if (session.lock.live) {
     return (
-      <ConfirmButton palette={palette} label="Stop" confirmLabel="Stop it" disabled={busy} onConfirm={onStop} />
+      <ConfirmButton
+        palette={palette}
+        label="Stop"
+        confirmLabel="Stop it"
+        detail="Ends the adapter process holding this session and closes its Claude terminal. The Paseo agent stays, and the next prompt resumes the conversation."
+        disabled={busy}
+        onConfirm={onStop}
+      />
     );
   }
   return (
@@ -178,6 +203,7 @@ function SessionAction({
       palette={palette}
       label="Release lock"
       confirmLabel="Release it"
+      detail="Deletes a lock whose process is gone. Do this only when the lock is in the way; a live session clears its own."
       disabled={busy}
       onConfirm={onRelease}
     />

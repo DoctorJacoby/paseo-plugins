@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
-import { adapterBinaryPath, adapterDirectory, repoRootFromPluginPath } from "./paths.ts";
+import { adapterCommand, adapterDirectory, repoRootFromPluginPath } from "./paths.ts";
 
 const EVENT_TIMEOUT_MS = 60_000;
 
@@ -41,7 +41,7 @@ test("hands the plugin ACP bridge a model catalogue, thought levels, and a sessi
   const connection = await runAcpProvider({
     id: "claude-tty-under-test",
     label: "Claude TTY",
-    command: [adapterBinaryPath(root)],
+    command: adapterCommand(root, env),
   }).connect({ versions: [1], capabilities: ["prompt.message", "session.configure"] });
   t.after(async () => {
     await connection.close();

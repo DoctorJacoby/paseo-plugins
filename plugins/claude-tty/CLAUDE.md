@@ -90,6 +90,22 @@ On a throwaway 0.8.0 daemon with a fake ACP agent, the unwrapped provider reprod
 That is what the daemon's config-file ACP providers get, since they have no `steerActiveTurn` at all.
 Claude absorbing a message into the running turn, the way it does with text typed into its terminal, would need a path to the adapter that avoids the bridge's prompt admission, and there is none.
 
+## The host owns the settings, and the adapter is told where they are
+
+`registerSettings` hands the daemon a schema and nothing else: it returns `void`, `PluginServerContext` has no way to read a value back, and the `settings.changed` the store emits travels to the *clients* — `subscribeSettings` in the daemon's `session.ts` turns it into a `plugin_settings_changed` broadcast — never back into the plugin runtime.
+So there is no watcher to hang a mirror file off, and this plugin neither reads nor writes the document.
+
+The store runs inside the plugin's own subprocess and keeps one file per definition at `$PASEO_HOME/plugin-settings/<plugin id>/<settings id>.json`, holding `{ "version", "values" }` where `version` is the definition's rather than the file format's.
+Verified on a 0.8.0 daemon with a throwaway plugin: a missing file reads as the schema's defaults at revision `missing`, a write lands that envelope, and `paseo plugin remove` deletes the directory.
+`server/paths.ts` rebuilds that path from `PASEO_HOME`, the way `daemonConfigPath` already did.
+
+The adapter is a detached process the ACP shim spawns, so it is handed the path as `--settings-file` in the command `connect()` builds, and re-reads it at every suspension.
+The alternatives were both worse: `runAcpProvider` takes no `env`, and a value passed at spawn would only reach the next adapter rather than the sessions already open, which is the behaviour the idle timeout is documented to have.
+
+The setting is global, not per session, and it is now a choice rather than the only option.
+A per-session `ProviderSetting` is only ever *listed* from the ACP session's own `configOptions` — `toProviderConfigState` in the SDK's ACP connection builds `settings` from every option whose category is neither `model` nor `thought_level` — and the adapter does advertise config options since it started publishing its model and effort selectors, so the `session/set_config_option` surface that was missing is there.
+What is left is the trade: an uncategorised option beside those two would put the timeout in the session's own configuration and take it out of the store Paseo owns, so it would stop surviving a reload, stop being one answer per host, and stop being deleted with the plugin. That is why it stays where it is.
+
 ## An upgrade leaves the old provider entry behind
 
 Before this plugin registered a provider of its own, it wrote the adapter into the daemon configuration as `agents.providers.traecli`.
@@ -158,11 +174,13 @@ Mutations read the state directory through `readState`, which does not touch the
 It is also raced against a budget and paged explicitly, because the SDK waits a minute by default while the daemon kills a plugin RPC at 30 seconds, and one page is capped at 200 agents.
 A daemon that stalls or pages forever costs the titles and nothing else, which is the whole claim.
 
-## There is no way to open an agent from here
+## Opening an agent, and the one thing a surface still cannot reach
 
-`openSurface` and `openPanel` live on command contexts and on the client entry's context, never on a surface's props, and the only `openPanel` target is a panel this plugin contributes.
-Paseo has a `{ kind: "agent" }` navigation target of its own but does not expose it, so nothing a plugin can call reveals an agent's terminal.
-An "open" button built on the client entry and an agent panel was tried and removed: the closest the API reaches is opening a tab that shows the same row the sidebar already shows, which is worse than sending someone to the agent list.
+`navigation.openAgent({ agentId })` is on `PluginSurfaceProps` and reveals an agent's terminal; the sessions rows use it.
+It is optional in the type because a host older than 0.7 passes none, so the button is hidden rather than dead when it is absent — as it is for a session the daemon no longer lists an agent for.
+
+`openSurface` and `openSettings` are the other half and are **not** on a surface's props: they live on command contexts and on the client entry's context.
+So the panel cannot send anyone to this plugin's own settings screen, and the Command Center item is what does.
 
 ## A subagent is not a session, and its work is in another file
 
@@ -186,11 +204,16 @@ Reaching across that line is a compile error rather than something the compiler 
 `shared/` is the strictest of the three: no Node, no React, and no runtime-specific SDK entry, which is why everything here that computes a path or reads the disk is server-side however little it does.
 Each entry default-exports one contribution function returning cleanup, and RPC names must match `^[a-z][a-z0-9._-]*$`.
 
-## The panel is styled off paseo's own scale
+## The rows are the host's; what is left is what the host has no component for
 
-`client/theme.ts` and `client/ui.tsx` are copies of the Discord plugin's, because the host hands plugins no metrics and each plugin directory has to bundle from its own root.
-Build new controls out of those tokens rather than out of literals, and keep the two files in step with their originals.
-Icons come from `@getpaseo/plugin/client/react-native`, by Lucide name; nothing here draws its own.
+Sections, cards and rows come from `@getpaseo/plugin/client/ui`, which the compiler keeps external and the app supplies, so they are the host's own components rather than a copy that drifts.
+Two of their behaviours decide how everything here is written: `SettingsCard` draws the divider between its children itself, so nothing passes a `divided`, and `SettingsRow` renders `children` as the control at the right of the row while `label`, `hint` and `error` stack on the left.
+`error` is the row's danger colour and is announced, which is why `ReadingRow` puts a bad reading there and a good one in `hint`; there is no leading slot and no way to colour a `hint`, so the tone dot moved into the control.
+
+What remains in `client/ui.tsx` is what the host exports no equivalent of: a bare `Button` (its own is only ever a `SettingsAction`'s), a `Disclosure` (built on `SettingsCard`, whose divider then appears exactly while it is open), a `StatusDot` and the mono font.
+`client/theme.ts` is down to the metric scales the host does not hand over and the two shades its components are written against but do not expose.
+Build new controls out of those tokens rather than out of literals.
+Icons, `Modal`, `useToast` and `copyText` come from `@getpaseo/plugin/client/react-native`; nothing here draws its own dialog or icon.
 
 ## Tests
 

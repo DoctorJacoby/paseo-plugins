@@ -1,10 +1,10 @@
+import { SettingsCard, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
 import React from "react";
 import { Text } from "react-native";
 import type { StatusPayload } from "../shared/contracts.ts";
 import { PROVIDER_ID } from "../shared/provider.ts";
 import { fontSize, leading, spacing, type Palette } from "./theme.ts";
 import { ReadingRow, type Reading } from "./status.tsx";
-import { Card, Row, Section } from "./ui.tsx";
 
 type LegacyProvider = NonNullable<StatusPayload["legacyProvider"]>;
 
@@ -21,11 +21,11 @@ export function legacyAgentsReading(legacy: LegacyProvider): Reading {
  */
 export function LegacyProviderSection({ palette, legacy }: { palette: Palette; legacy: LegacyProvider }) {
   return (
-    <Section palette={palette} title="Left over from an older install">
-      <Card palette={palette}>
-        <Row palette={palette} title={`Provider "${legacy.id}"`} hint={legacy.command} />
-        <ReadingRow palette={palette} title="Agents on it" reading={legacyAgentsReading(legacy)} divided />
-      </Card>
+    <SettingsSection title="Left over from an older install">
+      <SettingsCard>
+        <SettingsRow label={`Provider "${legacy.id}"`} hint={legacy.command} />
+        <ReadingRow palette={palette} title="Agents on it" reading={legacyAgentsReading(legacy)} />
+      </SettingsCard>
       <Text
         style={{
           color: palette.foregroundMuted,
@@ -39,6 +39,6 @@ export function LegacyProviderSection({ palette, legacy }: { palette: Palette; l
         agents belong on this plugin's provider, so anything that names "{legacy.id}/&lt;model&gt;" has
         to name "{PROVIDER_ID}/&lt;model&gt;" instead.
       </Text>
-    </Section>
+    </SettingsSection>
   );
 }

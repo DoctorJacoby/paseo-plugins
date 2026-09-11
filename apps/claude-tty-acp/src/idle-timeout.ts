@@ -1,11 +1,9 @@
 import { readFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { writeLog } from "./log.ts";
 
 /**
- * These three are mirrored by `plugins/claude-tty/src/settings.shared.ts`, which is what writes the
- * settings file read below; the adapter is bundled from its own package and cannot import it.
+ * These three are mirrored by `plugins/claude-tty/shared/settings.ts`, which defines the settings
+ * document read below; the adapter is bundled from its own package and cannot import it.
  * Keep the two copies in step: a `MAX_IDLE_TIMEOUT_MS` that drifts lets the plugin save a value the
  * adapter then refuses.
  */
@@ -15,10 +13,15 @@ export const MAX_IDLE_TIMEOUT_MS = 2_147_483_647;
 
 export type Env = Record<string, string | undefined>;
 
-/** Mirrors `settingsFilePath` in `plugins/claude-tty/src/paths.shared.ts`, the plugin that writes this file. */
-export function settingsFilePath(env: Env = process.env): string {
-  const base = env.XDG_CACHE_HOME?.trim() || path.join(env.HOME || os.homedir(), ".cache");
-  return path.join(base, "paseo-plugins", "claude-tty", "settings.json");
+let settingsFile: string | null = null;
+
+/**
+ * Paseo keeps this setting in the host's own plugin settings store, whose layout is the daemon's
+ * business, so the plugin resolves the path and passes it at spawn rather than the adapter guessing
+ * at one. An adapter run outside Paseo is given none and has only the environment variable.
+ */
+export function useSettingsFile(filePath: string | null): void {
+  settingsFile = filePath;
 }
 
 /**
@@ -51,24 +54,28 @@ export function idleTimeoutFromEnv(env: Env = process.env): number | null {
   return null;
 }
 
-async function idleTimeoutFromSettings(env: Env = process.env): Promise<number | null> {
-  const filePath = settingsFilePath(env);
+/**
+ * The host writes `{ version, values }`, and the version is the plugin's schema rather than this
+ * file's contract: a document whose values still carry a usable `idleTimeoutMs` is honoured whatever
+ * it says, and one that does not falls back like any other unreadable document.
+ */
+async function idleTimeoutFromSettings(filePath: string): Promise<number | null> {
   let raw: unknown;
   try {
     raw = JSON.parse(await readFile(filePath, "utf8"));
   } catch (error) {
     // No file is the normal state until someone changes the setting in Paseo.
     if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
-      writeLog({ level: "warn", message: "Ignored an unreadable Claude TTY settings file", file: filePath, error: errorMessage(error) });
+      writeLog({ level: "warn", message: "Ignored an unreadable Claude TTY settings document", file: filePath, error: errorMessage(error) });
     }
     return null;
   }
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const settings = (raw as { settings?: unknown }).settings;
-  if (settings === null || typeof settings !== "object" || Array.isArray(settings)) return null;
-  const value = parseIdleTimeout((settings as Record<string, unknown>).idleTimeoutMs);
+  const values = (raw as { values?: unknown }).values;
+  if (values === null || typeof values !== "object" || Array.isArray(values)) return null;
+  const value = parseIdleTimeout((values as Record<string, unknown>).idleTimeoutMs);
   if (value === null) {
-    writeLog({ level: "warn", message: "Ignored an out-of-range idle timeout in the Claude TTY settings file", file: filePath });
+    writeLog({ level: "warn", message: "Ignored an out-of-range idle timeout in the Claude TTY settings document", file: filePath });
     return null;
   }
   return value;
@@ -76,11 +83,12 @@ async function idleTimeoutFromSettings(env: Env = process.env): Promise<number |
 
 /**
  * The environment variable is the standalone knob and wins, so a host that sets it keeps its value
- * whatever the panel says. This is read per suspension rather than once at startup, so a change made
- * in Paseo reaches sessions that are already connected.
+ * whatever the settings screen says. This is read per suspension rather than once at startup, so a
+ * change made in Paseo reaches sessions that are already connected.
  */
-export async function readIdleTimeout(env: Env = process.env): Promise<number> {
-  return idleTimeoutFromEnv(env) ?? (await idleTimeoutFromSettings(env)) ?? DEFAULT_IDLE_TIMEOUT_MS;
+export async function readIdleTimeout(env: Env = process.env, filePath: string | null = settingsFile): Promise<number> {
+  const configured = idleTimeoutFromEnv(env) ?? (filePath === null ? null : await idleTimeoutFromSettings(filePath));
+  return configured ?? DEFAULT_IDLE_TIMEOUT_MS;
 }
 
 function errorMessage(error: unknown): string {

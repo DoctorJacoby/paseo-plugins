@@ -73,8 +73,9 @@ The next prompt launches `claude --resume <id>` automatically, so the conversati
 Quiet is observed rather than inferred from prompts: the clock runs from the last thing the session actually did, whether that was the end of a prompt, a hook Claude called, a record it wrote, a turn it was woken for by a task notification, or a step one of its background agents took.
 A prompt is only what Paseo asked for; Claude goes on working after one — answering for an agent that reported, launching the next — and a suspension measured from the prompt alone stopped exactly that work an hour into it, mid-run.
 
-The timeout is read at each suspension rather than once at startup: `CLAUDE_TTY_ACP_IDLE_TIMEOUT_MS` if it is set, otherwise `idleTimeoutMs` in `${XDG_CACHE_HOME:-~/.cache}/paseo-plugins/claude-tty/settings.json`, which is what the Claude TTY plugin's panel writes.
-Reading it per suspension is what lets a change in that panel reach a session that is already connected, and it is also why an unreadable file or a malformed variable leaves the session running rather than taking the adapter down.
+The timeout is read at each suspension rather than once at startup: `CLAUDE_TTY_ACP_IDLE_TIMEOUT_MS` if it is set, otherwise `values.idleTimeoutMs` in the JSON document named by `--settings-file`, which is where Paseo stores the Claude TTY plugin's settings and which that plugin passes when it spawns the adapter.
+Reading it per suspension is what lets a change on that settings screen reach a session that is already connected, and it is also why an unreadable document or a malformed variable leaves the session running rather than taking the adapter down.
+An adapter started without `--settings-file` — by hand, or by anything that is not that plugin — has the variable and the default and nothing else.
 
 A suspension waits for its session to be genuinely idle. It stands aside while a turn is running and while a permission or question card is still waiting for an answer — stopping Claude then would cancel the request behind that card and leave it on screen in Paseo answering to nothing — and a suspension that fails re-arms rather than giving up, because giving up once would keep that process alive for the rest of its life.
 
