@@ -50,12 +50,21 @@ test("turns the adapter's mirrored tool calls into the cards the bridge cannot b
     output: "3 passing",
     exitCode: undefined,
   });
-  // An edit shows its diff, which the bridge would have looked for under ACP's own key names.
+  // An edit shows its diff, which the bridge would have looked for under ACP's own key names. It is
+  // still there once the edit has finished, and no result text stands in for the unified diff.
   assert.deepEqual(lastDetail(events, "edit-call"), {
     type: "edit",
     filePath: "/repo/src/app.ts",
     oldString: "before",
     newString: "after",
+    unifiedDiff: undefined,
+  });
+  // A write is an edit with nothing before it.
+  assert.deepEqual(lastDetail(events, "write-call"), {
+    type: "edit",
+    filePath: "/repo/notes.md",
+    oldString: undefined,
+    newString: "# Notes",
     unifiedDiff: undefined,
   });
   // A tool nothing has a card for shows the text it produced, which is how a subagent's log arrives.
@@ -170,6 +179,31 @@ function fakeAgent(): AcpStream {
           rawInput: { file_path: "src/app.ts", old_string: "before", new_string: "after" },
           locations: [{ path: "/repo/src/app.ts" }],
           content: [{ type: "diff", path: "/repo/src/app.ts", oldText: "before", newText: "after" }],
+        });
+        // A result replaces the call's content, so the adapter sends the diff again and leaves the result in the raw output.
+        update({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "edit-call",
+          status: "completed",
+          rawOutput: [{ type: "text", text: "The file /repo/src/app.ts has been updated successfully." }],
+          content: [{ type: "diff", path: "/repo/src/app.ts", oldText: "before", newText: "after" }],
+        });
+        update({
+          sessionUpdate: "tool_call",
+          toolCallId: "write-call",
+          title: "Write: /repo/notes.md",
+          kind: "edit",
+          status: "in_progress",
+          rawInput: { file_path: "/repo/notes.md", content: "# Notes" },
+          locations: [{ path: "/repo/notes.md" }],
+          content: [{ type: "diff", path: "/repo/notes.md", newText: "# Notes" }],
+        });
+        update({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "write-call",
+          status: "completed",
+          rawOutput: [{ type: "text", text: "File created successfully at: /repo/notes.md" }],
+          content: [{ type: "diff", path: "/repo/notes.md", newText: "# Notes" }],
         });
         update({
           sessionUpdate: "tool_call",
