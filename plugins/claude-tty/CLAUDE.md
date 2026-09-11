@@ -230,3 +230,10 @@ A test that resolves the plugin root walks up from `import.meta.dirname`, so it 
 
 `server/acp-provider.test.ts` is the one exception to all of that: it runs the adapter's own `tsc` build and then spawns the result, because the bridge it exercises takes a command rather than a module, and a stale `dist/` would otherwise decide the result.
 It points the adapter at a throwaway state directory so the run touches none of yours.
+
+## Auto Accept lives in the adapter
+
+The daemon gives its own ACP providers an `auto_accept` feature and answers their permission requests itself; a plugin provider gets neither.
+`ProviderSetting` also has no `icon` or `tooltip`, and the SDK's schema strips both, so the toggle shows with the app's generic settings icon.
+So the adapter publishes the toggle as a boolean ACP config option, which `runAcpProvider` maps to a toggle setting and the daemon to an agent feature, and answers the `PermissionRequest` hook itself.
+`paseo run` can set a mode but not a feature, and the daemon defaults nothing for a plugin provider's unattended create, which is why a session's starting value comes from the host settings rather than from whoever created it.

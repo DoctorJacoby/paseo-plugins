@@ -3,6 +3,7 @@ import path from "node:path";
 import type { AgentSideConnection, PermissionOption, RequestPermissionResponse, ToolCallUpdate, ToolKind } from "@agentclientprotocol/sdk";
 import { createDeferred, type Deferred } from "./deferred.ts";
 import type { HookPayload, HookResponse } from "./hook-server.ts";
+import { writeLog } from "./log.ts";
 import { questionText } from "./question-text.ts";
 
 type PermissionSuggestion = Record<string, unknown>;
@@ -54,11 +55,13 @@ export class InteractionBridge {
   private readonly pendingTools: PendingTool[] = [];
   private readonly pendingRequests = new Set<Deferred<RequestPermissionResponse>>();
   private readonly liveInteractions = new Map<string, Promise<InteractionOutcome>>();
+  private readonly autoAccept: () => Promise<boolean>;
 
-  constructor(sessionId: string, cwd: string, connection: AgentSideConnection) {
+  constructor(sessionId: string, cwd: string, connection: AgentSideConnection, autoAccept: () => Promise<boolean> = async () => false) {
     this.sessionId = sessionId;
     this.cwd = cwd;
     this.connection = connection;
+    this.autoAccept = autoAccept;
   }
 
   /** Something is waiting on a person: a card is open in Paseo and Claude is blocked on the hook behind it. */
@@ -117,6 +120,13 @@ export class InteractionBridge {
     const toolCallId = pending?.id || `permission-${randomUUID()}`;
     const interaction = this.interactionFor(name, input, toolCallId);
     if (interaction) return permissionResponse(await interaction);
+    // Asked here, per request, rather than when the session opened, so switching it on reaches a session
+    // already working. It answers allow once and takes none of Claude's suggestions, so turning it off
+    // again leaves no rule behind; the questions and plans above are for a person and never reach it.
+    if (await this.autoAccept()) {
+      writeLog({ level: "info", message: "Auto-accepted a permission request", sessionId: this.sessionId, tool: name, toolCallId });
+      return permissionHookResponse({ response: { outcome: { outcome: "selected", optionId: "allow-once" } } });
+    }
     const suggestions = Array.isArray(payload.permission_suggestions)
       ? payload.permission_suggestions.filter((value): value is PermissionSuggestion => objectValue(value) !== null)
       : [];

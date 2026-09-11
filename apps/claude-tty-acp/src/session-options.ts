@@ -1,4 +1,5 @@
 import type { ModelInfo, SessionConfigOption, SessionConfigSelectOption, SessionModeState, SessionModelState } from "@agentclientprotocol/sdk";
+import { AUTO_ACCEPT_CONFIG_ID } from "./auto-accept.ts";
 
 // Paseo reads a literal "default" model id as "no model selected" and then refuses to list a draft agent's commands.
 export const INHERIT_MODEL_ID = "inherit";
@@ -70,8 +71,12 @@ export function modeState(currentModeId: string): SessionModeState {
  * own bridge still prefers `models` for the model list and takes the thought levels only from here.
  * So a session publishes both, and the model values are the `modelId`s verbatim because the daemon falls
  * back to this option when `session/set_model` fails and matches the choice by value.
+ *
+ * Auto Accept rides beside them as a boolean, which the plugin bridge turns into an agent toggle. Neither
+ * Paseo bridge advertises boolean options at initialize, but the plugin bridge reads and sets them, and the
+ * daemon's own ignores options it was not configured to map.
  */
-export function configOptions(currentModelId: string, currentEffortId: string): SessionConfigOption[] {
+export function configOptions(currentModelId: string, currentEffortId: string, autoAccept: boolean): SessionConfigOption[] {
   return [
     {
       id: MODEL_CONFIG_ID,
@@ -89,6 +94,13 @@ export function configOptions(currentModelId: string, currentEffortId: string): 
       type: "select",
       currentValue: currentEffortId,
       options: EFFORTS,
+    },
+    {
+      id: AUTO_ACCEPT_CONFIG_ID,
+      name: "Auto Accept",
+      description: "Approve Claude Code's permission prompts without showing a card. Questions and plans still ask.",
+      type: "boolean",
+      currentValue: autoAccept,
     },
   ];
 }

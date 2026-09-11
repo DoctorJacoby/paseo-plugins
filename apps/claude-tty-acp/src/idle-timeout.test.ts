@@ -10,8 +10,8 @@ import {
   idleTimeoutFromEnv,
   parseIdleTimeout,
   readIdleTimeout,
-  useSettingsFile,
 } from "./idle-timeout.ts";
+import { useSettingsFile } from "./settings-document.ts";
 
 async function withSettingsFile(contents: string | null, run: (filePath: string) => Promise<void>): Promise<void> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "claude-tty-idle-"));

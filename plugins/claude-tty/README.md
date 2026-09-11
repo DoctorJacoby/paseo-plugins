@@ -44,7 +44,7 @@ Earlier versions of this plugin, and the adapter's own README, registered the ad
 
 Under **Settings → Plugins → Claude TTY** on the selected host, or from the Command Center as "Claude TTY: settings". Paseo owns the store, so the value survives a reload, an update and a daemon restart, every client sees a change without reloading, and it is deleted with the plugin.
 
-The **Suspend idle Claude** setting controls how long a native Claude process remains alive after the session last did anything. It defaults to one hour, and you can choose 15 minutes through 8 hours, or **Never**. It applies to every session on the host. The adapter's per-session ACP configuration carries the model and the effort level and nothing else, and moving the timeout in beside them would also move the value out of the store Paseo owns, so the one that survives a reload and an update stays host-wide.
+The **Suspend idle Claude** setting controls how long a native Claude process remains alive after the session last did anything. It defaults to one hour, and you can choose 15 minutes through 8 hours, or **Never**. It applies to every session on the host. The adapter's per-session ACP configuration carries the model, the effort level and Auto Accept, and moving the timeout in beside them would also move the value out of the store Paseo owns, so the one that survives a reload and an update stays host-wide.
 
 Suspending stops the PTY and any background tasks it owns, but does not close or archive the Paseo agent. The adapter keeps the persisted session mapping, and the next prompt automatically launches `claude --resume` with the same Claude session, model, mode, and effort level. The timer runs from the last thing the session actually did, not from the last prompt: a turn Claude runs on its own after a task notification, the agents it launches, and the hooks it calls all count, so a session working unattended is not stopped mid-run.
 
@@ -53,6 +53,14 @@ A session waiting on a subagent is not suspended at all. The adapter holds the t
 The plugin hands the adapter the path of the document Paseo writes, and the adapter reads it each time it schedules a suspension, so a change applies to sessions that are already open rather than only to the next adapter launch. A suspension also stands aside while a permission or question card is still waiting for an answer, and tries again later.
 
 Setting `CLAUDE_TTY_ACP_IDLE_TIMEOUT_MS` on the daemon overrides this setting for the hosts that do it, because the adapter inherits the daemon's environment and lets the variable win; the settings screen says so when something has set it.
+
+### Permission prompts
+
+Every agent has an **Auto Accept** toggle, the same switch Paseo shows for its own ACP providers. While it is on, Claude Code's permission prompts are approved once without a card, including the ones it keeps even in Bypass Permissions mode, such as removing everything in the working directory. Questions Claude asks and plans it proposes still wait for an answer. Paseo's own toggle carries a shield icon, but a plugin provider has no field for one, so this one shows with the generic settings icon.
+
+**Auto-accept in new sessions** is where the toggle starts, and is off unless you turn it on. **In Bypass Permissions sessions** overrides it for sessions in that mode, or is the same as other sessions. These exist for agents nobody is watching: `paseo run` and anything built on it can pick a mode but not a toggle, so an overnight agent started in Bypass Permissions gets auto-accept only from this setting.
+
+An agent whose toggle you switch keeps that value, across suspensions and restarts, and stops following these settings. Every other agent reads them again at each permission prompt and whenever its mode changes, so a change here applies to open sessions too.
 
 ## Troubleshooting
 

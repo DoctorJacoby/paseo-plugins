@@ -21,6 +21,16 @@ export const IDLE_TIMEOUT_OPTIONS = [
   { value: 0, label: "Never" },
 ] as const;
 
+/**
+ * What a Bypass Permissions session starts its Auto Accept toggle from. The adapter mirrors the keys and
+ * these values in `apps/claude-tty-acp/src/auto-accept.ts`; keep the two in step.
+ */
+export const BYPASS_AUTO_ACCEPT_OPTIONS = [
+  { value: "inherit", label: "Same as other sessions" },
+  { value: "on", label: "On" },
+  { value: "off", label: "Off" },
+] as const;
+
 /** Names the document the daemon keeps at `$PASEO_HOME/plugin-settings/claude-tty/<id>.json`. */
 export const SETTINGS_ID = "settings";
 
@@ -40,6 +50,10 @@ export const settingsDocument = defineSettings({
       .min(0)
       .max(MAX_IDLE_TIMEOUT_MS)
       .default(DEFAULT_IDLE_TIMEOUT_MS),
+    /** Where an agent's Auto Accept toggle starts until someone switches it on that agent. */
+    autoAccept: z.boolean().default(false),
+    /** Overrides `autoAccept` for sessions in Bypass Permissions mode, unless it inherits. */
+    bypassAutoAccept: z.enum(["inherit", "on", "off"]).default("inherit"),
   }),
 });
 

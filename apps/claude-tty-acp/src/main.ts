@@ -1,9 +1,10 @@
 import { Readable, Writable } from "node:stream";
 import { AgentSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
 import { ClaudeTtyAgent } from "./agent.ts";
-import { readIdleTimeout, useSettingsFile } from "./idle-timeout.ts";
+import { readIdleTimeout } from "./idle-timeout.ts";
 import { enableLogFile, writeLog } from "./log.ts";
 import { cleanupAbandonedRuntimeDirectories } from "./runtime-directories.ts";
+import { useSettingsFile } from "./settings-document.ts";
 
 export async function runAcpServer(settingsFile: string | null): Promise<void> {
   // The daemon reads stderr and keeps none of it, so the server also writes its log to disk.

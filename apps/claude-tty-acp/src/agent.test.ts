@@ -75,6 +75,10 @@ test("publishes the model and the effort level as config options too", async () 
     effort?.type === "select" ? effort.options.map((option) => ("group" in option ? option.group : option.value)) : [],
     ["inherit", "low", "medium", "high", "xhigh", "max"],
   );
+  // With no settings document to read, a new session asks, and the bridge shows this as the agent's toggle.
+  const autoAccept = created.configOptions?.find((option) => option.id === "auto_accept");
+  assert.equal(autoAccept?.type, "boolean");
+  assert.equal(autoAccept?.currentValue, false);
   await agent.close();
 });
 
