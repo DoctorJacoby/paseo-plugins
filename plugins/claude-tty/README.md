@@ -38,6 +38,7 @@ Earlier versions of this plugin, and the adapter's own README, registered the ad
 
 - **An agent stays on the provider it was started on.** Agents started on `traecli` keep using the old entry and cannot resume once it is gone, so remove it once none are left: under **Settings → Providers** on that host it is the Claude TTY entry with an actions menu, and **Remove provider** deletes it from the configuration. The plugin never removes it itself.
 - **The provider ID changes.** Anything that names `traecli/<model>` — a spawn script, an agent profile, a schedule — goes on starting agents on the old entry, and stops working once it is removed. Point it at `claude-tty/<model>` instead.
+- **The idle timeout carries over.** On its first start the plugin copies a timeout chosen in the old panel into the settings Paseo stores for it, unless a value has already been saved there, and deletes the old file under `${XDG_CACHE_HOME:-~/.cache}/paseo-plugins/claude-tty/`.
 
 ## Settings
 

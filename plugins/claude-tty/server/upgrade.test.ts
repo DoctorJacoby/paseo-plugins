@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type { PaseoApi } from "@getpaseo/client";
-import { readLegacyProvider } from "./upgrade.ts";
+import { legacySettingsFilePath, settingsFilePath } from "./paths.ts";
+import { carryOverIdleTimeout, readLegacyProvider } from "./upgrade.ts";
 
 async function withHome(run: (env: { HOME: string; PASEO_HOME: string }) => Promise<void>): Promise<void> {
   const home = await mkdtemp(path.join(os.tmpdir(), "claude-tty-upgrade-"));
@@ -20,6 +21,10 @@ async function withHome(run: (env: { HOME: string; PASEO_HOME: string }) => Prom
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, JSON.stringify(value));
+}
+
+async function exists(filePath: string): Promise<boolean> {
+  return stat(filePath).then(() => true, () => false);
 }
 
 /** A daemon listing these providers, one page at a time, or one that never answers. */
@@ -76,5 +81,87 @@ test("does not count agents it could not list them all", async () => {
     await writeJson(path.join(env.PASEO_HOME, "config.json"), { agents: { providers: { traecli: { command: [ADAPTER] } } } });
     const reading = await readLegacyProvider(fakePaseo("stalls"), env);
     assert.equal(reading?.agents, null);
+  });
+});
+
+test("carries a chosen idle timeout into the host's document and removes the old file", async () => {
+  await withHome(async (env) => {
+    const legacy = legacySettingsFilePath(env);
+    await writeJson(legacy, { version: 1, settings: { idleTimeoutMs: 4 * 60 * 60 * 1_000 } });
+
+    await carryOverIdleTimeout(env);
+
+    // The shape the host's store writes, which is also what the adapter reads.
+    assert.deepEqual(JSON.parse(await readFile(settingsFilePath(env), "utf8")), {
+      version: 1,
+      values: { idleTimeoutMs: 4 * 60 * 60 * 1_000 },
+    });
+    assert.equal(await exists(legacy), false);
+    assert.equal(await exists(path.dirname(legacy)), false);
+    assert.equal(await exists(path.join(env.HOME, ".cache", "paseo-plugins")), true);
+  });
+});
+
+test("keeps a document the host already has, and still removes the old file", async () => {
+  await withHome(async (env) => {
+    const legacy = legacySettingsFilePath(env);
+    await writeJson(legacy, { version: 1, settings: { idleTimeoutMs: 0 } });
+    const saved = JSON.stringify({ version: 1, values: { idleTimeoutMs: 15 * 60 * 1_000 } });
+    await mkdir(path.dirname(settingsFilePath(env)), { recursive: true });
+    await writeFile(settingsFilePath(env), saved);
+
+    await carryOverIdleTimeout(env);
+
+    assert.equal(await readFile(settingsFilePath(env), "utf8"), saved);
+    assert.equal(await exists(legacy), false);
+  });
+});
+
+test("writes nothing for an old file the old plugin would have read as the default", async () => {
+  await withHome(async (env) => {
+    const legacy = legacySettingsFilePath(env);
+    await mkdir(path.dirname(legacy), { recursive: true });
+    await writeFile(legacy, "{ not json");
+
+    await carryOverIdleTimeout(env);
+
+    assert.equal(await exists(settingsFilePath(env)), false);
+    assert.equal(await exists(legacy), false);
+  });
+});
+
+test("reads the settings bare, the way the old plugin also accepted them", async () => {
+  await withHome(async (env) => {
+    await writeJson(legacySettingsFilePath(env), { idleTimeoutMs: "1800000" });
+    await carryOverIdleTimeout(env);
+    assert.deepEqual(JSON.parse(await readFile(settingsFilePath(env), "utf8")).values, { idleTimeoutMs: 1_800_000 });
+  });
+});
+
+test("does nothing at all when there is no old file", async () => {
+  await withHome(async (env) => {
+    await carryOverIdleTimeout(env);
+    assert.equal(await exists(path.dirname(settingsFilePath(env))), false);
+  });
+});
+
+test("keeps the old file for the next start when the document cannot be written", async () => {
+  await withHome(async (env) => {
+    const legacy = legacySettingsFilePath(env);
+    await writeJson(legacy, { version: 1, settings: { idleTimeoutMs: 1_800_000 } });
+    // A file where the plugin's settings directory belongs makes the write fail.
+    await writeFile(path.join(env.PASEO_HOME, "plugin-settings"), "");
+
+    const warnings: unknown[] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args);
+    try {
+      await carryOverIdleTimeout(env);
+    } finally {
+      console.warn = warn;
+    }
+
+    assert.equal(await exists(legacy), true);
+    assert.equal(warnings.length, 1);
   });
 });

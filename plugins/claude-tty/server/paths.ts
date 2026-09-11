@@ -45,6 +45,15 @@ export function settingsFilePath(env: Env = process.env): string {
   return path.join(paseoHome(env), "plugin-settings", PLUGIN_ID, `${SETTINGS_ID}.json`);
 }
 
+/**
+ * Where this plugin kept the idle timeout before the host owned its settings. Nothing writes it any
+ * more: it is read once, to carry a value someone chose over into the host's document.
+ */
+export function legacySettingsFilePath(env: Env = process.env): string {
+  const base = env.XDG_CACHE_HOME?.trim() || path.join(env.HOME || os.homedir(), ".cache");
+  return path.join(base, "paseo-plugins", PLUGIN_ID, "settings.json");
+}
+
 export function sessionsDirectory(stateDirectory: string): string {
   return path.join(stateDirectory, "sessions");
 }

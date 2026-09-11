@@ -2,6 +2,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import * as contracts from "./shared/contracts.ts";
 import { settingsDocument } from "./shared/settings.ts";
 import { claudeTtyProvider } from "./server/provider.ts";
+import { carryOverIdleTimeout } from "./server/upgrade.ts";
 import {
   doctorHandler,
   lastDoctorHandler,
@@ -24,6 +25,9 @@ export default function contribute(server: PluginServerContext) {
   // The store this registers is the settings screen's whole backing; the plugin only reads the path
   // it writes to, and hands that to the adapter.
   server.registerSettings(settingsDocument);
+
+  // An install from before the host owned the settings kept the idle timeout in a file of its own.
+  void carryOverIdleTimeout();
 
   server.handle(contracts.getStatus, (_input, { paseo }) => statusHandler(paseo));
   server.handle(contracts.runDoctor, () => doctorHandler());

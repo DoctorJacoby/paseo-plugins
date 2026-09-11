@@ -106,10 +106,10 @@ The setting is global, not per session, and it is now a choice rather than the o
 A per-session `ProviderSetting` is only ever *listed* from the ACP session's own `configOptions` — `toProviderConfigState` in the SDK's ACP connection builds `settings` from every option whose category is neither `model` nor `thought_level` — and the adapter does advertise config options since it started publishing its model and effort selectors, so the `session/set_config_option` surface that was missing is there.
 What is left is the trade: an uncategorised option beside those two would put the timeout in the session's own configuration and take it out of the store Paseo owns, so it would stop surviving a reload, stop being one answer per host, and stop being deleted with the plugin. That is why it stays where it is.
 
-## An upgrade leaves the old provider entry behind
+## An upgrade leaves two things behind, and only one of them is the plugin's to fix
 
-Before this plugin registered a provider of its own, it wrote the adapter into the daemon configuration as `agents.providers.traecli`.
-Nothing about the plugin provider touches that entry, so `server/upgrade.ts` looks for it.
+Before this plugin registered a provider of its own, it wrote the adapter into the daemon configuration as `agents.providers.traecli`, and kept the idle timeout in `${XDG_CACHE_HOME:-~/.cache}/paseo-plugins/claude-tty/settings.json` as `{ version: 1, settings: { idleTimeoutMs } }`.
+Nothing about the plugin provider touches either, so `server/upgrade.ts` deals with both.
 
 The old entry is reported, never removed.
 An agent started on it cannot resume once it is gone, whether those agents are finished with is not the plugin's to judge, and removing it would bring back `paseo.config.patch` for that one purpose.
@@ -117,6 +117,13 @@ An agent started on it cannot resume once it is gone, whether those agents are f
 The status RPC carries it with a count of the agents still on it, from `paseo.agents.list()`, which leaves archived agents out; the count is null rather than partial when the listing runs out of budget, since a short count reads as safe to remove.
 The agents are listed only while the entry exists, so the five-second poll costs one configuration read on every other host.
 The app offers **Remove provider** under Settings → Providers only for a provider whose `source` is `custom` (read out of the web UI bundle), which is the old entry and never this plugin's, and that is where the panel and the README send people.
+
+The idle timeout is copied, once, when the plugin process starts, because nothing in the store API can do it.
+`registerSettings` returns `void`, and a definition's `migrate` runs only on a stored document with an older `version`, never on a missing one.
+But the store keeps nothing in memory: it reads its file on every read and every write, and a revision is the hash of the bytes on disk (0.8.0's `plugins/settings/index.js`), so a document written beside it is what the settings screen and the adapter see next.
+No `settings.changed` goes out for it, which only a screen opened within milliseconds of the plugin starting could notice.
+It is written to a temporary file and `link`ed into place rather than renamed, because `link` refuses an existing target and a value saved in Paseo in the meantime must win.
+The old file is deleted once the host has a document, whoever wrote it, so a reinstall — which deletes the document and starts from defaults — cannot bring a stale value back; it is kept only when writing failed, for the next start to try again.
 
 ## Constraints that are not obvious
 
