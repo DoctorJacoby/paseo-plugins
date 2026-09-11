@@ -30,6 +30,13 @@ The daemon's own configuration is the one record, so `server/checkout.ts` reads 
 `connect()` is async, so the command is resolved per connection rather than at registration: `server/provider.ts` builds the `runAcpProvider` shim inside `connect` and delegates to it.
 That shim spawns one adapter process per ACP session, plus a throwaway one per connection to probe capabilities and another per catalogue fetch, and it drops the adapter's stderr — which is why the diagnostics section still runs the adapter's own `--diagnose`.
 
+How often that catalogue fetch happens is `getCatalogCacheKey`'s to decide.
+Without it the daemon keys the cache on `["target", <cwd>]` and fetches once per distinct workspace directory, which on a machine that spawns worktrees is once per worktree; with it, equal keys share one fetch across every directory.
+The key is the adapter's build — the entry point's path, mtime and size, one `stat` — rather than a bare constant, because the catalogue is compiled into the adapter and a rebuilt adapter is where a different one comes from; a constant would serve the old catalogue for the rest of the daemon's life.
+Nothing else invalidates it. The daemon refetches when something asks it to refresh (`force`), and marks catalogues stale when the settings snapshot is refreshed; there is no expiry.
+It is a separate IPC call on essentially every provider snapshot read, so it must stay at one `stat`: the checkout behind it is resolved once, since the path the daemon loaded this plugin process from cannot change under it.
+An adapter that is not built yet answers with a shared key of its own rather than with none, so that failure is reported once instead of once per workspace, and the build that fixes it changes the key.
+
 ## The adapter stays a subprocess, and `connector:` cannot replace it
 
 `RunAcpProviderOptions` takes a `command` or a `connector`, and the second would run the adapter inside the plugin's own process — no PID, no lock file, no Stop button, none of `server/lock-owner.ts`.
