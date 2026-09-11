@@ -3,6 +3,7 @@ import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
 import { PROVIDER_ID, PROVIDER_LABEL } from "../shared/provider.ts";
 import { resolveRepoRoot } from "./checkout.ts";
 import { adapterBinaryPath } from "./paths.ts";
+import { toolCallDetails } from "./tool-details.ts";
 
 /**
  * Claude publishes its slash commands and skills after `initialize`, over `available_commands_update`,
@@ -28,12 +29,15 @@ export function claudeTtyProvider(): ProviderRegistration {
     async connect(request) {
       const repo = await resolveRepoRoot();
       if (repo.root === null) throw new Error(repo.problem);
-      return runAcpProvider({
+      const details = toolCallDetails();
+      const connection = await runAcpProvider({
         id: PROVIDER_ID,
         label: PROVIDER_LABEL,
         command: [adapterBinaryPath(repo.root)],
         acpOptions: { waitForInitialCommands: true, initialCommandsTimeoutMs: INITIAL_COMMANDS_TIMEOUT_MS },
+        transformers: [details.transformer],
       }).connect(request);
+      return details.wrap(connection);
     },
   };
 }

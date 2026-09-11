@@ -72,6 +72,19 @@ const UNREPORTED_AGENT = "Claude stopped before this agent reported back.";
 const STOPPED_AGENT = "Claude stopped this agent.";
 
 /**
+ * A copy of every tool-call update, sent beside the update itself as a vendor notification.
+ *
+ * Paseo has two ACP bridges and they read a tool call differently. The daemon's own builds eight
+ * kinds of card out of `kind`, `content` and `locations`; the one behind the plugin SDK's
+ * `runAcpProvider` keeps `rawInput` and `rawOutput` and nothing else, and renders every call as an
+ * edit or as raw JSON. The fields it drops are gone before any of the hooks it offers can see them,
+ * so the only way a plugin can draw the card the daemon draws is to be handed the update a second
+ * time on a channel the bridge does not consume. A client that does not know the method ignores it,
+ * which is what both of Paseo's bridges do with an extension they were not written for.
+ */
+export const TOOL_CALL_MIRROR_METHOD = "_claude_tty/tool_call";
+
+/**
  * A subagent and the tool call standing for it. Nested subagents share their spawner's card, so one
  * card holds one log and an update never replaces another agent's steps with its own.
  */
@@ -671,6 +684,13 @@ export class TranscriptTranslator {
 
   private async send(update: SessionUpdate): Promise<void> {
     this.lastActivity = Date.now();
+    // Ahead of the update it copies, not behind it. The plugin bridge handles a vendor notification
+    // where it sits in the stream and an update on a lane of its own, so a copy sent afterwards
+    // still arrives first — but only by the depth of that lane, which is whatever a single read off
+    // the pipe happened to carry. Sent first it is first by the order of the stream instead.
+    if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+      await this.connection.extNotification(TOOL_CALL_MIRROR_METHOD, { sessionId: this.sessionId, update });
+    }
     await this.connection.sessionUpdate({ sessionId: this.sessionId, update });
   }
 

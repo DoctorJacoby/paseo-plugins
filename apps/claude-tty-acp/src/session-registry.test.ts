@@ -41,7 +41,7 @@ test("loads sessions persisted before the model id rename", async () => {
   const sessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const store = new StateStore(root);
   const registry = new SessionRegistry(
-    { sessionUpdate: async () => undefined } as unknown as AgentSideConnection,
+    { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection,
     new HookServer(),
     { claudeConfigDir: root },
     store,
@@ -70,7 +70,7 @@ test("opens a session left in a mode this adapter no longer offers", async () =>
   const sessionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   const store = new StateStore(root);
   const registry = new SessionRegistry(
-    { sessionUpdate: async () => undefined } as unknown as AgentSideConnection,
+    { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection,
     new HookServer(),
     { claudeConfigDir: root },
     store,
@@ -97,7 +97,7 @@ test("reads an effort level back, and falls to the default for one it has no rec
   const root = await mkdtemp(path.join(os.tmpdir(), "session-registry-test-"));
   const store = new StateStore(root);
   const registry = new SessionRegistry(
-    { sessionUpdate: async () => undefined } as unknown as AgentSideConnection,
+    { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection,
     new HookServer(),
     { claudeConfigDir: root },
     store,

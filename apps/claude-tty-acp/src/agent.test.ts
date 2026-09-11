@@ -8,7 +8,7 @@ import { ClaudeTtyAgent } from "./agent.ts";
 import { createDeferred } from "./deferred.ts";
 
 function createAgent(): ClaudeTtyAgent {
-  return new ClaudeTtyAgent({ sessionUpdate: async () => undefined } as unknown as AgentSideConnection);
+  return new ClaudeTtyAgent({ sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection);
 }
 
 test("advertises the interactive ACP agent", async () => {
@@ -98,6 +98,7 @@ test("publishes available commands after session/new responds", async () => {
       sessionUpdate: async (params: SessionNotification) => {
         published.resolve({ afterResponse: responded, update: params.update });
       },
+      extNotification: async () => undefined,
     } as unknown as AgentSideConnection,
     { claudeConfigDir: configDir },
   );

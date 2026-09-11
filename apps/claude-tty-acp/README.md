@@ -198,6 +198,11 @@ Claude appends its own JSONL transcript under its projects directory, and the ad
 A translator turns each record into an ACP session update — user and agent chunks, thinking, tool calls with diffs and file locations, `TodoWrite` into a plan, token usage into a context-window update — and dedupes by record key so re-reads and history replay never emit the same thing twice.
 Loading a persisted session runs that translator over the whole file to rebuild the conversation, and still launches nothing until the next prompt.
 
+Every tool-call update goes out twice: once as the ACP update, and just ahead of it as a copy on the vendor method `_claude_tty/tool_call`.
+Paseo has two ACP bridges and only one of them reads a tool call whole.
+Its own builds a card out of the update's `kind`, `content` blocks and `locations`; the one behind the plugin SDK's `runAcpProvider` keeps `rawInput` and `rawOutput`, renders every call as an edit or as raw JSON, and drops the rest before any hook it offers can see it.
+The copy is the only way a plugin gets those fields back, and a client that has no use for it ignores it, which is what both of Paseo's bridges do with an extension they were not written for.
+
 A message typed while Claude is working is the one thing that is not written as a turn.
 Claude absorbs it mid-turn, at its next tool result, and writes a `queued_command` attachment there: no user turn ever carries the message, and it reaches the transcript nowhere else, so that attachment is the only record of it.
 It is read as the message, keyed by the id the queue gave the item rather than by the record it was written in, since a queue rewritten under a new record names the same item and says nothing new.

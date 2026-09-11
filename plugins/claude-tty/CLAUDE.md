@@ -53,6 +53,21 @@ Groups are flattened and an option's `description` is dropped for both pickers, 
 The v1 `NewSessionResponse` this bridge parses has no `models` field at all, so an adapter answering the older way gets an empty picker and a `session.open` naming a model fails with "ACP session does not expose model configuration".
 The daemon's own bridge is the other way round — it prefers `models.availableModels` and reads only the thought levels out of `configOptions` — so the adapter answers with both, and both are exercised: `server/acp-provider.test.ts` drives `runAcpProvider` as a library against the built adapter and asserts the catalogue and a session opened on a named model.
 
+## A tool call arrives twice, because once is not enough to draw its card
+
+`toolTimelineItem` in the SDK's ACP connection is the whole of that bridge's card-building: `kind === "edit" || name.includes("edit") ? edit : unknown`, over a snapshot `mergeToolCallSnapshot` has already built without the ACP `content` blocks.
+The daemon's own bridge builds eight shapes out of exactly the data that is missing — `mapToolDetail` reads `kind`, the `content` blocks and the `locations` — so the plugin provider would have shipped every shell command, search and subagent log as raw JSON, which is a regression against what a claude-tty session shows today.
+
+None of the four `AcpTransformer` hooks closes that on its own.
+`toolCall` receives a snapshot with no `content` on it — measured, `"content" in snapshot === false` — and returns another snapshot, which goes through `toolTimelineItem` anyway; `notification` never sees a `session/update`, because `routeVendorNotifications` diverts only methods the ACP SDK does not know and `session/update` is one it does.
+
+So the adapter sends a copy of each tool-call update over the vendor method `_claude_tty/tool_call`, `server/tool-details.ts` keeps it from a `notification` transformer, and the wrapper in the same file puts the card it describes onto the item the bridge emits for that call.
+The mapping is a port of the daemon's `mapToolDetail`, so the two bridges draw the same card; the terminal content block is the one branch left out, since it needs ACP terminals the adapter does not implement.
+
+It is a wrapper rather than the `{ type: "timeline", item }` that hook can return, and the reason is ordering.
+A vendor notification is handled where it sits in the stream, synchronously, while a `session/update` goes onto a notification lane of its own — measured with a fake in-process agent: an item returned from the hook is emitted *before* the bridge's own item for that call, and the bridge's `unknown` then overwrites it.
+The copy is sent ahead of the update rather than behind it for the same reason: behind, it still arrives first, but only by the depth of that lane, which is whatever one read off the pipe happened to carry.
+
 ## Constraints that are not obvious
 
 The daemon's `PATH` is not your shell's.
