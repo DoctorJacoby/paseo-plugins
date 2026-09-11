@@ -1,17 +1,21 @@
+import type { PaseoApi } from "@getpaseo/client";
 import type { StatusPayload } from "../shared/contracts.ts";
 import { adapterBinaryPath, adapterEntryPath, claudeCandidates, defaultStateDirectory, settingsFilePath, type Env } from "./paths.ts";
 import { IDLE_TIMEOUT_ENV, parseIdleTimeout } from "../shared/settings.ts";
 import { fileExists, firstExecutable, resolveRepoRoot } from "./checkout.ts";
+import { readLegacyProvider } from "./upgrade.ts";
 
-export async function readStatus(env: Env = process.env): Promise<StatusPayload> {
-  const [repo, claudeBinary] = await Promise.all([
+export async function readStatus(paseo: PaseoApi, env: Env = process.env): Promise<StatusPayload> {
+  const [repo, claudeBinary, legacyProvider] = await Promise.all([
     resolveRepoRoot(env),
     firstExecutable(claudeCandidates(env)),
+    readLegacyProvider(paseo, env),
   ]);
   const common = {
     host: { node: process.version, claude: claudeBinary },
     stateDirectory: defaultStateDirectory(env),
     settings: { file: settingsFilePath(env), envOverrideMs: envOverrideOf(env) },
+    legacyProvider,
   };
 
   if (repo.root === null) {

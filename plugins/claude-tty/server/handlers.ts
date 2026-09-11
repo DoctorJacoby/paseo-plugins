@@ -10,8 +10,8 @@ import { listSessions, quarantineSession, releaseLock, releaseStaleLocks, stopSe
 import { removeState } from "./uninstall.ts";
 import { readStatus } from "./status.ts";
 
-export function statusHandler(): Promise<StatusPayload> {
-  return readStatus();
+export function statusHandler(paseo: PaseoApi): Promise<StatusPayload> {
+  return readStatus(paseo);
 }
 
 export function doctorHandler(): Promise<DoctorPayload> {

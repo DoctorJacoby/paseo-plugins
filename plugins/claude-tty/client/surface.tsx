@@ -9,6 +9,7 @@ import { PROVIDER_LABEL } from "../shared/provider.ts";
 import { DoctorSection } from "./doctor.tsx";
 import { SessionsSection } from "./sessions.tsx";
 import { RemoveStateSection } from "./uninstall.tsx";
+import { LegacyProviderSection } from "./upgrade.tsx";
 import { MAX_CONTENT_WIDTH, fontSize, leading, spacing } from "./theme.ts";
 import { Monospace, ReadingRow, adapterReading, claudeReading } from "./status.tsx";
 import { usePalette } from "./ui.tsx";
@@ -66,6 +67,8 @@ export function ClaudeTtySurface({ theme, layout, navigation }: PluginSurfacePro
           </Text>
         </SettingsSection>
       )}
+
+      {status.legacyProvider === null ? null : <LegacyProviderSection palette={palette} legacy={status.legacyProvider} />}
 
       <SettingsSection title="Adapter">
         <SettingsCard>
