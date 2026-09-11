@@ -30,6 +30,29 @@ The daemon's own configuration is the one record, so `server/checkout.ts` reads 
 `connect()` is async, so the command is resolved per connection rather than at registration: `server/provider.ts` builds the `runAcpProvider` shim inside `connect` and delegates to it.
 That shim spawns one adapter process per ACP session, plus a throwaway one per connection to probe capabilities and another per catalogue fetch, and it drops the adapter's stderr — which is why the diagnostics section still runs the adapter's own `--diagnose`.
 
+## The adapter stays a subprocess, and `connector:` cannot replace it
+
+`RunAcpProviderOptions` takes a `command` or a `connector`, and the second would run the adapter inside the plugin's own process — no PID, no lock file, no Stop button, none of `server/lock-owner.ts`.
+It is not on, and the reason is not native modules: the plugin bundle's injected `require` falls through to a real `createRequire` bound to the daemon's path, so a runtime-computed absolute specifier reaches node-pty's prebuild.
+
+The reason is the environment. `AcpConnector` is `() => AcpStream`, called with **zero arguments** — measured — and on that branch nothing ever reads an env: only the `command` branch spawns with `{ ...process.env, ...options.env }`, and the `_meta._paseo` blob on `session/new` carries `systemPrompt`, `providerOptions`, `toolPolicy` and `persist` and no env either.
+`ProviderSessionConfig.env` is where the daemon puts `PASEO_AGENT_ID`, the adapter hands it straight to the Claude PTY, and the `glab` wrapper's bot-identity swap keys on exactly that.
+In process, `process.env` is the plugin worker's — one environment shared by every session, with no agent id in it — so every agent would post to GitLab as the person running the daemon.
+
+The blast radius is the second reason. Plugin server code runs in a forked child, so a native crash does not take the daemon down — but on child close the daemon fails every provider connection, **removes the plugin**, and closes every agent on it, with no automatic restart anywhere in its plugin runtime.
+Today one wedged adapter is one wedged session with a Stop button.
+`connector` is also undocumented: `public-docs/plugins/v0.8/*` shows only the `command` form.
+Revisit only if a future SDK gives `AcpConnector` a context argument carrying the session config.
+
+## The pickers are config options, and the category decides which picker
+
+The bridge `runAcpProvider` returns builds the whole of `ProviderConfigState` from the session's `configOptions`: `toProviderConfigState` takes the *first* option with `category: "model"` as the model picker and the first with `category: "thought_level"` as the thinking one, and everything else — an absent category included — becomes a `settings` row.
+`modes` is the exception and comes only from the ACP `modes` state, so a `category: "mode"` option would be shown as a setting rather than merged into the mode picker; the adapter publishes none.
+Groups are flattened and an option's `description` is dropped for both pickers, which is why the descriptions worth keeping are on the modes.
+
+The v1 `NewSessionResponse` this bridge parses has no `models` field at all, so an adapter answering the older way gets an empty picker and a `session.open` naming a model fails with "ACP session does not expose model configuration".
+The daemon's own bridge is the other way round — it prefers `models.availableModels` and reads only the thought levels out of `configOptions` — so the adapter answers with both, and both are exercised: `server/acp-provider.test.ts` drives `runAcpProvider` as a library against the built adapter and asserts the catalogue and a session opened on a named model.
+
 ## Constraints that are not obvious
 
 The daemon's `PATH` is not your shell's.
@@ -125,3 +148,6 @@ Icons come from `@getpaseo/plugin/client/react-native`, by Lucide name; nothing 
 `pnpm test` is `node --test "{client,server,shared}/**/*.test.ts"` through Node's type stripping, so no TypeScript that has to be emitted and relative imports keep their `.ts` extension.
 A test that resolves the plugin root walks up from `import.meta.dirname`, so it counts the directory it sits in and no `src/` above it.
 `@getpaseo/client` is on 0.8.0 across the workspace, which is what `@getpaseo/plugin` takes as a peer.
+
+`server/acp-provider.test.ts` is the one exception to all of that: it runs the adapter's own `tsc` build and then spawns the result, because the bridge it exercises takes a command rather than a module, and a stale `dist/` would otherwise decide the result.
+It points the adapter at a throwaway state directory so the run touches none of yours.
