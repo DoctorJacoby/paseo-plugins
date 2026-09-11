@@ -1,11 +1,11 @@
 import type { PluginSurfaceProps, SettingsState } from "@getpaseo/plugin/client";
 import { useRpc, useSettings } from "@getpaseo/plugin/client";
-import { SettingsAction, SettingsCard, SettingsRow, SettingsSection, SettingsSelect } from "@getpaseo/plugin/client/ui";
+import { SettingsAction, SettingsCard, SettingsRow, SettingsSection, SettingsSelect, SettingsSwitch } from "@getpaseo/plugin/client/ui";
 import React, { useEffect, useState } from "react";
 import { Text } from "react-native";
 import * as contracts from "../shared/contracts.ts";
 import type { StatusPayload } from "../shared/contracts.ts";
-import { IDLE_TIMEOUT_ENV, IDLE_TIMEOUT_OPTIONS, settingsDocument } from "../shared/settings.ts";
+import { BYPASS_AUTO_ACCEPT_OPTIONS, IDLE_TIMEOUT_ENV, IDLE_TIMEOUT_OPTIONS, settingsDocument } from "../shared/settings.ts";
 import { fontSize, leading } from "./theme.ts";
 
 type Saved = Extract<SettingsState<typeof settingsDocument.schema>, { status: "ready" }>;
@@ -20,7 +20,7 @@ export function ClaudeTtySettings({ theme }: PluginSurfaceProps) {
   }
   if (settings.status !== "ready") {
     return (
-      <SettingsSection title="Idle sessions">
+      <SettingsSection title="Settings">
         <Note color={theme.colors.statusDanger}>{settings.error}</Note>
         <SettingsCard>
           <SettingsAction label="Read them again" actionLabel="Reload" onPress={() => void settings.reload()} />
@@ -32,7 +32,12 @@ export function ClaudeTtySettings({ theme }: PluginSurfaceProps) {
       </SettingsSection>
     );
   }
-  return <IdleSuspension theme={theme} settings={settings} />;
+  return (
+    <>
+      <IdleSuspension theme={theme} settings={settings} />
+      <PermissionPrompts theme={theme} settings={settings} />
+    </>
+  );
 }
 
 function IdleSuspension({ theme, settings }: { theme: PluginSurfaceProps["theme"]; settings: Saved }) {
@@ -57,7 +62,7 @@ function IdleSuspension({ theme, settings }: { theme: PluginSurfaceProps["theme"
           value={selected}
           options={options}
           disabled={settings.saving}
-          onValueChange={(value) => void settings.save({ idleTimeoutMs: Number(value) }, settings.revision)}
+          onValueChange={(value) => void settings.save({ ...settings.values, idleTimeoutMs: Number(value) }, settings.revision)}
         />
         {adapter ? <SettingsRow label="Stored in" hint={adapter.file} /> : null}
       </SettingsCard>
@@ -65,6 +70,37 @@ function IdleSuspension({ theme, settings }: { theme: PluginSurfaceProps["theme"
         Suspension stops the PTY and its background tasks but keeps the logical session. Your next
         prompt resumes the same Claude conversation automatically. The adapter reads this at every
         suspension, so the change applies to open sessions too.
+      </Note>
+    </SettingsSection>
+  );
+}
+
+function PermissionPrompts({ theme, settings }: { theme: PluginSurfaceProps["theme"]; settings: Saved }) {
+  return (
+    <SettingsSection title="Permission prompts">
+      <SettingsCard>
+        <SettingsSwitch
+          label="Auto-accept in new sessions"
+          hint="Where each agent's Auto Accept toggle starts"
+          error={settings.saveError}
+          value={settings.values.autoAccept}
+          disabled={settings.saving}
+          onValueChange={(value) => void settings.save({ ...settings.values, autoAccept: value }, settings.revision)}
+        />
+        <SettingsSelect
+          label="In Bypass Permissions sessions"
+          hint="Overrides the switch above for sessions in that mode"
+          value={settings.values.bypassAutoAccept}
+          options={BYPASS_AUTO_ACCEPT_OPTIONS}
+          disabled={settings.saving}
+          onValueChange={(value) => void settings.save({ ...settings.values, bypassAutoAccept: value }, settings.revision)}
+        />
+      </SettingsCard>
+      <Note color={theme.colors.foregroundMuted}>
+        Auto Accept approves Claude Code's permission prompts without showing a card, including the
+        removals of critical paths that Claude Code asks about even in Bypass Permissions mode. Questions
+        and plans still wait for you. An agent you switch by hand keeps its own value; every other agent
+        reads these again at each permission prompt, so a change here applies to open sessions too.
       </Note>
     </SettingsSection>
   );

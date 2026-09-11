@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type { PaseoApi } from "@getpaseo/client";
+import { settingsDocument } from "../shared/settings.ts";
 import { legacySettingsFilePath, settingsFilePath } from "./paths.ts";
 import { carryOverIdleTimeout, readLegacyProvider } from "./upgrade.ts";
 
@@ -94,7 +95,7 @@ test("carries a chosen idle timeout into the host's document and removes the old
     // The shape the host's store writes, which is also what the adapter reads.
     assert.deepEqual(JSON.parse(await readFile(settingsFilePath(env), "utf8")), {
       version: 1,
-      values: { idleTimeoutMs: 4 * 60 * 60 * 1_000 },
+      values: settingsDocument.schema.parse({ idleTimeoutMs: 4 * 60 * 60 * 1_000 }),
     });
     assert.equal(await exists(legacy), false);
     assert.equal(await exists(path.dirname(legacy)), false);
@@ -134,7 +135,7 @@ test("reads the settings bare, the way the old plugin also accepted them", async
   await withHome(async (env) => {
     await writeJson(legacySettingsFilePath(env), { idleTimeoutMs: "1800000" });
     await carryOverIdleTimeout(env);
-    assert.deepEqual(JSON.parse(await readFile(settingsFilePath(env), "utf8")).values, { idleTimeoutMs: 1_800_000 });
+    assert.deepEqual(JSON.parse(await readFile(settingsFilePath(env), "utf8")).values, settingsDocument.schema.parse({ idleTimeoutMs: 1_800_000 }));
   });
 });
 

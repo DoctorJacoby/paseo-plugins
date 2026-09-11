@@ -121,6 +121,8 @@ export type RuntimeDependencies = {
   model?: string;
   mode?: string;
   effort?: string;
+  /** Whether a permission request is answered without a card, asked at each request. */
+  autoAccept?: () => Promise<boolean>;
   onClaudeSessionChange?: (claudeSessionId: string) => Promise<void>;
 };
 
@@ -207,7 +209,7 @@ export class ClaudeRuntime {
     this.mode = dependencies.mode ?? "default";
     this.effort = dependencies.effort ?? INHERIT_EFFORT_ID;
     this.onClaudeSessionChange = dependencies.onClaudeSessionChange;
-    this.interactions = new InteractionBridge(sessionId, cwd, connection);
+    this.interactions = new InteractionBridge(sessionId, cwd, connection, dependencies.autoAccept);
     this.spawnPty = dependencies.spawnPty ?? nodePty.spawn;
     this.startupTimeoutMs = dependencies.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
     this.readinessTimeoutMs = dependencies.readinessTimeoutMs ?? STARTUP_TIMEOUT_MS;
