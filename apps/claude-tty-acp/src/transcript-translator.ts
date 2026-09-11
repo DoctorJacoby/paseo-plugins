@@ -108,6 +108,8 @@ export class TranscriptTranslator {
   private readonly backgroundShellsByToolCall = new Map<string, string>();
   /** The task each `TaskStop` call names, kept for the life of the session because a replay reads the call again and needs it again. */
   private readonly stoppedTasksByToolCall = new Map<string, string>();
+  /** The diff each edit's tool call carried, until its result has sent it again. */
+  private readonly diffsByToolCall = new Map<string, ToolCallContent[]>();
   private lastSubagentActivity = 0;
   private lastBackgroundShellActivity = 0;
   private lastAssistantActivity = 0;
@@ -322,6 +324,7 @@ export class TranscriptTranslator {
     this.lastAssistantActivity = Date.now();
     const locations = toolLocations(input, this.cwd);
     const content = toolContents(name, input, this.cwd);
+    if (content.some((item) => item.type === "diff")) this.diffsByToolCall.set(toolCallId, content);
     await this.send({
       sessionUpdate: "tool_call",
       toolCallId,
@@ -362,7 +365,11 @@ export class TranscriptTranslator {
     this.emitted.add(resultKey);
     // A result is Claude's tool finishing, which is as much its own progress as calling it was.
     this.lastAssistantActivity = Date.now();
-    const content = resultContent(block.content);
+    // Content replaces what the call carried, and both of Paseo's bridges read an edit card's text as its unified diff.
+    // So an edit's result sends its diff again rather than the line saying the file was updated, which would leave a card with no diff at all.
+    // The result is still there in `rawOutput`.
+    const content = this.diffsByToolCall.get(toolCallId) ?? resultContent(block.content);
+    this.diffsByToolCall.delete(toolCallId);
     this.openToolCalls.delete(toolCallId);
     await this.send({
       sessionUpdate: "tool_call_update",
