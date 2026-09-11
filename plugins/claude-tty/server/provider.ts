@@ -5,6 +5,7 @@ import { PROVIDER_ID, PROVIDER_LABEL } from "../shared/provider.ts";
 import { resolveRepoRoot } from "./checkout.ts";
 import { adapterCommand, adapterEntryPath, cardAnswersDirectory, defaultStateDirectory } from "./paths.ts";
 import { withPermissionCards } from "./permission-bridge.ts";
+import { withSteerFallback } from "./steering.ts";
 import { subagentSource } from "./subagents.ts";
 import { withSubagentSessions } from "./subsessions.ts";
 import { toolCallDetails } from "./tool-details.ts";
@@ -79,11 +80,15 @@ export function claudeTtyProvider(): ProviderRegistration {
         acpOptions: { waitForInitialCommands: true, initialCommandsTimeoutMs: INITIAL_COMMANDS_TIMEOUT_MS },
         transformers: [details.transformer],
       }).connect(request);
-      // The cards go innermost, so the two wrappers outside read tool calls that already say what
-      // they were. The subsessions go outermost, so what the daemon is told this connection can do
-      // is what the wrapper that emits the child sessions has already agreed to.
+      // The steer fallback goes innermost, because it stands in for the bridge. The cards go next, so
+      // the two wrappers outside read tool calls that already say what they were. The subsessions go
+      // outermost, so what the daemon is told this connection can do is what the wrapper that emits
+      // the child sessions has already agreed to.
       return withSubagentSessions(
-        withPermissionCards(details.wrap(connection), cardAnswersDirectory(defaultStateDirectory())),
+        withPermissionCards(
+          details.wrap(withSteerFallback(connection, request.capabilities)),
+          cardAnswersDirectory(defaultStateDirectory()),
+        ),
         subagentSource(),
         request.capabilities,
       );
