@@ -17,7 +17,8 @@ test("streams a delayed transcript and flushes its final offset", async () => {
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const watcher = new TranscriptWatcher(
     new TranscriptReader(sessionId, cwd, { configDir: root }),
     new TranscriptTranslator(sessionId, cwd, connection),
@@ -55,7 +56,8 @@ test("does not consider a partial final JSONL record stable", async () => {
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const watcher = new TranscriptWatcher(
     new TranscriptReader(sessionId, cwd, { configDir: root }),
     new TranscriptTranslator(sessionId, cwd, connection),
@@ -85,7 +87,7 @@ test("leaves the subagent throttle alone unless the flush is the end of a turn",
   const root = await mkdtemp(path.join(os.tmpdir(), "transcript-watcher-test-"));
   const cwd = "/work/watch-subagents";
   const sessionId = "66666666-6666-4666-8666-666666666666";
-  const connection = { sessionUpdate: async () => undefined } as unknown as AgentSideConnection;
+  const connection = { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection;
   const forced: boolean[] = [];
   const watcher = new TranscriptWatcher(
     new TranscriptReader(sessionId, cwd, { configDir: root }),

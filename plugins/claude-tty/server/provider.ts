@@ -6,6 +6,7 @@ import { adapterCommand, cardAnswersDirectory, defaultStateDirectory } from "./p
 import { withPermissionCards } from "./permission-bridge.ts";
 import { subagentSource } from "./subagents.ts";
 import { withSubagentSessions } from "./subsessions.ts";
+import { toolCallDetails } from "./tool-details.ts";
 
 /**
  * Claude publishes its slash commands and skills after `initialize`, over `available_commands_update`,
@@ -32,16 +33,19 @@ export function claudeTtyProvider(): ProviderRegistration {
     async connect(request) {
       const repo = await resolveRepoRoot();
       if (repo.root === null) throw new Error(repo.problem);
+      const details = toolCallDetails();
       const connection = await runAcpProvider({
         id: PROVIDER_ID,
         label: PROVIDER_LABEL,
         command: adapterCommand(repo.root),
         acpOptions: { waitForInitialCommands: true, initialCommandsTimeoutMs: INITIAL_COMMANDS_TIMEOUT_MS },
+        transformers: [details.transformer],
       }).connect(request);
-      // The subsessions go outermost, so what the daemon is told this connection can do is what the
-      // wrapper that emits the child sessions has already agreed to.
+      // The cards go innermost, so the two wrappers outside read tool calls that already say what
+      // they were. The subsessions go outermost, so what the daemon is told this connection can do
+      // is what the wrapper that emits the child sessions has already agreed to.
       return withSubagentSessions(
-        withPermissionCards(connection, cardAnswersDirectory(defaultStateDirectory())),
+        withPermissionCards(details.wrap(connection), cardAnswersDirectory(defaultStateDirectory())),
         subagentSource(),
         request.capabilities,
       );
