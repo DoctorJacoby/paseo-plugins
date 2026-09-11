@@ -18,7 +18,7 @@ async function main(): Promise<void> {
     if (!diagnostics.ok) process.exitCode = 1;
     return;
   }
-  await runAcpServer(action.settingsFile);
+  await runAcpServer(action.settingsFile, action.answersDirectory);
 }
 
 main().catch((error: unknown) => {

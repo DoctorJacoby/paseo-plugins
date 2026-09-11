@@ -225,7 +225,7 @@ The adapter runs a single loopback HTTP server whose URL carries a per-process s
 `Stop`, `StopFailure` and `SessionEnd` end the turn with `end_turn`, `refusal` and `cancelled`, each first flushing the transcript until the file stops growing so the updates land before the turn does.
 
 `PermissionRequest` becomes an ACP permission request offering Allow once, Claude's own permission suggestions as always-allow options, and Deny, and the answer becomes the hook's decision — unless [Auto Accept](#auto-accept) is on, which answers Allow once without asking.
-`PreToolUse` intercepts two tools before they run: `AskUserQuestion` renders as permission cards, and `ExitPlanMode` renders as a plan approval.
+`PreToolUse` intercepts two tools before they run: `AskUserQuestion` renders as one permission card for the whole call, and `ExitPlanMode` renders as a plan approval.
 
 ### State on disk
 
@@ -248,14 +248,15 @@ The plugin asks, through `acpOptions.waitForInitialCommands`, for up to 10 secon
 
 Related, a draft must carry a model ID that is not literally `default`: Paseo reads `default` as "no model selected" and returns an empty list before the adapter ever launches, which is why the pass-through entry is named `inherit` instead.
 
-### Questions arrive as permission cards
+### A question card needs the plugin to be worth answering
 
-Claude's `AskUserQuestion` tool cannot use Paseo's native question and chooser UI while an external provider is selected, because Paseo's generic ACP provider exposes only the standard ACP permission request path.
-The adapter renders each question as a permission card with an action per answer: single-select answers work through those actions, and multi-select questions repeat the card until Done is selected.
-Choose *Answer this question in chat* when an answer needs free-form text; the adapter defers that question, continues through the remaining cards, preserves their answers, and asks Claude to restate only the deferred questions before waiting for the next normal message.
+Claude's `AskUserQuestion` raises one permission card for the whole tool call, carrying every question it asks.
+Under the Claude TTY plugin that card is Paseo's own question form — radio buttons, checkboxes for a multi-select question, a box for an answer that is on none of the lists — and every answer comes back in one response, because the plugin republishes the request and hands the answers back down here.
+See the plugin's own notes for how, and for what it costs: an option's `preview` has no surface in that form and is folded into its description.
 
-The native chooser is available only to Paseo's direct providers, because plugins cannot intercept or transform ACP requests, contribute permission renderers, or emit native agent question events.
-Supporting it here requires Paseo's generic ACP provider to implement ACP `session/elicitation`, or a Paseo-specific equivalent, and return structured answers to the adapter.
+The adapter alone cannot do any of that.
+ACP has one shape for asking permission — a list of options, one of them chosen — so an adapter run outside the plugin, or without the `--answers-dir` it is passed at spawn, offers one option per answer while a single question is on the card and *Answer in chat* otherwise.
+Whatever the card is left with unanswered is denied back to Claude with instructions to restate those questions in prose and wait for a normal message, which is also what a cancelled or dismissed card does.
 
 ### Prompts sent mid-turn interrupt the turn
 
