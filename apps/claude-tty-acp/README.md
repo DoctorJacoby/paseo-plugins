@@ -141,7 +141,7 @@ Approving the card selects **Yes, I trust this folder** in the PTY and gives Cla
 
 Readiness also requires the screen to have stopped changing, and that is not a nicety.
 A resumed session paints its entire conversation before its input box exists, and text inside that conversation can satisfy every readiness signal on its own — a footer quoted in a message, a token count, the words `auto mode on`.
-A prompt pasted into that window is dropped, and because the paste never echoes there is nothing for the submit loop to notice: the adapter presses Enter once into whatever has focus and the turn then waits for a `Stop` hook that is never coming.
+A prompt pasted into that window is dropped, and the paste then never echoes -- which is the one thing the submit loop reads, and now what it refuses to proceed without.
 
 The second thing a resume can stop at is Claude asking how to open a long or old conversation — **Resume from summary**, **Resume full session as-is**, **Don't ask me again** — and the idle timeout guarantees every long-lived session eventually meets it.
 The adapter answers it the same way it answers the trust screen, by moving the selection and pressing Enter, and it always keeps the full session: the conversation is the ACP session it was asked to restore, and a summary would silently replace the history Paseo has already replayed into its timeline.
@@ -154,6 +154,12 @@ Slash commands are the one thing the adapter never asks Claude for: an interacti
 A prompt is flattened into one block of text: images and embedded resources become files in the runtime directory referenced as `@path`, and host-local resource links become `@path` directly.
 The adapter writes that text into the PTY wrapped in bracketed paste, waits briefly, then writes Enter, exactly as a person pasting into the terminal would.
 The paste ends with a space so Claude's completion menu is closed rather than swallowing that Enter, and the adapter watches its input box on the headless screen and presses Enter again while the prompt is still sitting there, because Claude drops the key while it is settling a paste.
+
+That echo is also what says the prompt went in at all, and it is not always prompt: Claude reads a bracketed paste at once but only shows it a render later, and on a loaded host that render is what slips.
+An Enter sent before it lands sends nothing, and the prompt turns up afterwards in a box nothing will press Enter on again -- so the adapter waits for a late echo rather than assuming there is not one coming, and submits it properly when it arrives.
+If the echo never arrives, or the box will not let go of the prompt after every attempt, the prompt fails instead of returning: every way a turn ends is a hook Claude fires, so a prompt Claude never took ends nothing, and the session would show as working for the rest of its life with the message gone and no line written anywhere.
+The turn it opened is released with it, so the session takes the next prompt normally.
+A screen that has painted nothing at all is not read as an empty box -- it says nothing either way -- and a prompt the box was seen to let go of between two samples is checked against the session's own activity before it is called lost.
 
 Cancellation is the same kind of impersonation: an Escape keystroke, plus a short fallback that ends the turn when no `Stop` hook follows.
 Changing the model, mode or effort while idle sends Ctrl-D, waits for the process to exit, and relaunches with `--resume`, which is why the change survives as a real flag rather than an in-band command.

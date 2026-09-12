@@ -742,6 +742,78 @@ test("resubmits a prompt Claude leaves sitting in its input box", async () => {
   }
 });
 
+// The screens Claude paints around a prompt, spelled here rather than inline: what these tests turn on
+// is which of them arrives when.
+const ESC_SEQ = String.fromCharCode(27);
+const CLEARED = `${ESC_SEQ}[2J${ESC_SEQ}[H`;
+const EMPTY_INPUT_BOX = `${CLEARED}\u276f\r\n`;
+const INPUT_BOX_HOLDING = `${CLEARED}\u276f hello there\r\n`;
+
+test("sends a prompt Claude echoed only after the first submit key, rather than leaving it in the box", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-late-paste-test-"));
+  const updates: SessionNotification[] = [];
+  let agent!: ClaudeTtyAgent;
+  let pty!: FakePty;
+  let submits = 0;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    pty = new FakePty(2100, (text) => {
+      // The paste is read and the box stays empty: Claude has not settled it into a render yet.
+      if (text.startsWith(`${ESC_SEQ}[200~`)) pty.emitData(EMPTY_INPUT_BOX);
+      if (text !== "\r") return;
+      submits += 1;
+      // The first submit key lands on that empty box and sends nothing; the echo turns up behind it.
+      pty.emitData(submits === 1 ? INPUT_BOX_HOLDING : EMPTY_INPUT_BOX);
+    });
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(createConnection(updates), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, latePasteMs: 500, contextRefreshTimeoutMs: 0 });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/late", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello there" }] });
+    await waitFor(() => submits === 2, 5_000);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+    assert.equal(submits, 2);
+  } finally {
+    await agent.close();
+    await rm(runtimeRoot, { force: true, recursive: true });
+  }
+});
+
+test("fails a prompt Claude never took, and leaves the session able to take the next one", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-lost-paste-test-"));
+  const updates: SessionNotification[] = [];
+  let agent!: ClaudeTtyAgent;
+  let pty!: FakePty;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    // The box is on screen and stays empty however often the prompt is pasted into it: the paste is gone.
+    pty = new FakePty(2200, () => pty.emitData(EMPTY_INPUT_BOX));
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(createConnection(updates), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, latePasteMs: 50, contextRefreshTimeoutMs: 0 });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/lost", mcpServers: [] });
+    await assert.rejects(
+      agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello there" }] }),
+      /never took the prompt/,
+    );
+    // The turn the lost prompt opened is gone with it, rather than holding the session busy for good.
+    await assert.rejects(
+      agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "anyone there" }] }),
+      /never took the prompt/,
+    );
+  } finally {
+    await agent.close();
+    await rm(runtimeRoot, { force: true, recursive: true });
+  }
+});
+
 test("reports the context reading Claude's status line writes after the turn", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-context-test-"));
   const updates: SessionNotification[] = [];

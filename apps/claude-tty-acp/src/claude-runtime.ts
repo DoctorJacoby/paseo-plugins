@@ -46,6 +46,11 @@ const SUBAGENT_POLL_MS = 5_000;
 const SUBMIT_ATTEMPTS = 6;
 const SUBMIT_CONFIRM_MS = 400;
 const PASTE_ECHO_MS = 300;
+// How long a paste that missed the window above is still waited for before the prompt is called undelivered.
+// Claude reads a bracketed paste immediately and echoes it a render later, and on a loaded host that render
+// is the thing that slips: the echo is what says the input box is holding the prompt, and a submit key sent
+// before it lands leaves that prompt sitting there unsent, with no hook to end the turn waiting on it.
+const LATE_PASTE_MS = 2_000;
 const PROMPT_ECHO_CHARS = 40;
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
@@ -102,6 +107,7 @@ export type RuntimeDependencies = {
   cancelTimeoutMs?: number;
   contextRefreshTimeoutMs?: number;
   submitDelayMs?: number;
+  latePasteMs?: number;
   transcriptPollIntervalMs?: number;
   workspaceTrustKeyDelayMs?: number;
   workspaceTrustSelectionTimeoutMs?: number;
@@ -145,6 +151,7 @@ export class ClaudeRuntime {
   private readonly cancelTimeoutMs: number;
   private readonly contextRefreshTimeoutMs: number;
   private readonly submitDelayMs: number;
+  private readonly latePasteMs: number;
   private readonly transcriptPollIntervalMs: number | undefined;
   private readonly workspaceTrustKeyDelayMs: number;
   private readonly workspaceTrustSelectionTimeoutMs: number;
@@ -227,6 +234,7 @@ export class ClaudeRuntime {
     this.cancelTimeoutMs = dependencies.cancelTimeoutMs ?? CANCEL_TIMEOUT_MS;
     this.contextRefreshTimeoutMs = dependencies.contextRefreshTimeoutMs ?? CONTEXT_REFRESH_TIMEOUT_MS;
     this.submitDelayMs = dependencies.submitDelayMs ?? SUBMIT_DELAY_MS;
+    this.latePasteMs = dependencies.latePasteMs ?? LATE_PASTE_MS;
     this.transcriptPollIntervalMs = dependencies.transcriptPollIntervalMs;
     this.workspaceTrustKeyDelayMs = dependencies.workspaceTrustKeyDelayMs ?? WORKSPACE_TRUST_KEY_DELAY_MS;
     this.workspaceTrustSelectionTimeoutMs = dependencies.workspaceTrustSelectionTimeoutMs ?? WORKSPACE_TRUST_SELECTION_TIMEOUT_MS;
@@ -285,8 +293,8 @@ export class ClaudeRuntime {
     this.interactions.beginTurn();
     this.assistantBaseline = this.translator.assistantChunks;
     this.translator.trackBackgroundWork();
-    await this.submit(prompt.text);
     try {
+      await this.submit(prompt.text);
       const result = await turn.promise;
       if (result.assistantMessage) {
         this.translator.suppressNextAssistantText(result.assistantMessage);
@@ -301,6 +309,15 @@ export class ClaudeRuntime {
       }
       await this.emitContextUsage(result.response.stopReason);
       return result.response;
+    } catch (error) {
+      // A prompt that never reached Claude has no hook coming to end its turn, so the turn is let go of
+      // here. Left standing it would hold the session busy for good and refuse every prompt after it.
+      if (this.turn === turn) {
+        this.turn = null;
+        this.interactions.cancelPending();
+        writeLog({ level: "error", message: "Failed to put a prompt to Claude", sessionId: this.sessionId, error: errorMessage(error) });
+      }
+      throw error;
     } finally {
       await cleanupPromptFiles(prompt.files);
     }
@@ -839,18 +856,49 @@ export class ClaudeRuntime {
     await this.removeRuntimeDirectory();
   }
 
+  /**
+   * Puts the prompt in Claude's input box and sends it, and says so when it could not.
+   *
+   * Every way a turn ends is a hook Claude fires, so a prompt Claude never took ends nothing: the turn
+   * stays open for the rest of the session, the client shows it working, and the message is gone without
+   * a line anywhere. That is worth an error rather than a silence, so this only returns on evidence that
+   * the prompt went in — the input box letting go of it, or the turn moving on by itself.
+   */
   private async submit(text: string): Promise<void> {
+    const activityBefore = this.activityAt;
     this.pty?.write(`${BRACKETED_PASTE_START}${text}${COMPLETION_DISMISS}${BRACKETED_PASTE_END}`);
     const echo = promptEcho(text);
-    const pasted = await this.screenSettles((screen) => inputBoxHolds(screen, echo), PASTE_ECHO_MS);
+    let pasted = await this.screenSettles((screen) => inputBoxHolds(screen, echo), PASTE_ECHO_MS);
     for (let attempt = 0; attempt < SUBMIT_ATTEMPTS; attempt += 1) {
       await delay(this.submitDelayMs);
       if (this.cancelRequested) return;
       this.pty?.write(CARRIAGE_RETURN);
-      if (!pasted) return;
-      if (await this.screenSettles((screen) => !inputBoxHolds(screen, echo), SUBMIT_CONFIRM_MS)) return;
+      if (pasted) {
+        if (await this.screenSettles((screen) => !inputBoxHolds(screen, echo), SUBMIT_CONFIRM_MS)) return;
+        continue;
+      }
+      // The key above went into an input box with nothing of ours in it, so it sent nothing. Claude
+      // settles a long paste a render after it reads it, and a prompt that turns up behind a spent
+      // submit key sits in the box unsent -- so the echo is waited for rather than assumed absent,
+      // and sent properly on the next attempt once it lands.
+      if (!inputBoxVisible(this.screen.snapshot())) return;
+      pasted = await this.screenSettles((screen) => inputBoxHolds(screen, echo), this.latePasteMs);
+      if (!pasted) {
+        if (this.submissionMovedOn(activityBefore)) return;
+        throw new Error(`Claude never took the prompt for session ${this.sessionId}: it did not appear in Claude's input box.`);
+      }
     }
-    writeLog({ level: "warn", message: "Claude kept the prompt in its input box after every submit attempt", sessionId: this.sessionId });
+    if (this.submissionMovedOn(activityBefore)) return;
+    throw new Error(`Claude kept the prompt for session ${this.sessionId} in its input box after ${SUBMIT_ATTEMPTS} submit attempts.`);
+  }
+
+  /**
+   * Whether the prompt went in after all, read from something other than the input box.
+   * The box is sampled, not followed, so a prompt taken between two samples leaves no trace in it —
+   * and calling that one undelivered would fail a turn that is running.
+   */
+  private submissionMovedOn(activityBefore: number): boolean {
+    return this.turn === null || this.activityAt > activityBefore;
   }
 
   private async screenSettles(predicate: (screen: string) => boolean, timeoutMs: number): Promise<boolean> {
@@ -1089,6 +1137,16 @@ function selectionArgs(model: string, mode: string, effort: string): string[] {
 
 function promptEcho(text: string): string {
   return text.trim().split("\n", 1)[0]!.trim().slice(0, PROMPT_ECHO_CHARS);
+}
+
+/**
+ * Whether Claude's input box is on screen at all, empty or not.
+ * An empty box only means the prompt is not in it where there is a box to read: a session whose terminal
+ * has painted nothing -- every test's fake PTY, and a real one before Claude's first render -- says nothing
+ * either way, and is left to the submit key rather than called a failure.
+ */
+function inputBoxVisible(screen: string): boolean {
+  return /^\s*❯/m.test(screen);
 }
 
 // The last prompt marker on screen is Claude's input box; the ones above it are prompts it has already taken.
