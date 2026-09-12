@@ -11,10 +11,24 @@ import { StateStore } from "./state-store.ts";
 import { subagentsDirectory } from "./subagent-transcript.ts";
 import { escapeProjectDirName } from "./transcript-reader.ts";
 
+/** What the runtime clears Claude's input box with before every paste. */
+const CLEAR_INPUT_BOX = "\u0015";
+
 class FakePty {
   readonly pid: number;
-  readonly writes: string[] = [];
+  /** Every key the runtime sent, in order, the clear before each prompt included. */
+  readonly keystrokes: string[] = [];
   killed = false;
+
+  /**
+   * The same without that clear. Nearly every test here counts or names the writes one prompt makes, and
+   * a key sent ahead of all of them says nothing about any one of them; the tests about the clear itself
+   * read `keystrokes`.
+   */
+  get writes(): string[] {
+    return this.keystrokes.filter((write) => write !== CLEAR_INPUT_BOX);
+  }
+
   private readonly dataHandlers: Array<(data: string) => void> = [];
   private readonly exitHandlers: Array<(event: { exitCode: number; signal?: number }) => void> = [];
   private readonly writeHandler: ((data: string) => void) | undefined;
@@ -26,7 +40,7 @@ class FakePty {
 
   write(data: string | Buffer): void {
     const text = data.toString();
-    this.writes.push(text);
+    this.keystrokes.push(text);
     this.writeHandler?.(text);
   }
 
@@ -709,6 +723,63 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
 }
+
+test("clears what an interrupt left in Claude's input box before pasting the next prompt", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-clear-box-test-"));
+  let agent!: ClaudeTtyAgent;
+  let pty!: FakePty;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    pty = new FakePty(6100);
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    // Claude as it stands after an interrupt: the prompt it was answering is back in the input box, where
+    // a bracketed paste would land on the end of it rather than in place of it.
+    setImmediate(() => pty.emitData("\u001b[2J\u001b[H\u276f the message before this one\r\n  \u23f8 manual mode on\r\n"));
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(createConnection([]), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, contextRefreshTimeoutMs: 0 });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/clear", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }] });
+    await waitFor(() => pty !== undefined && pty.writes.length === 2);
+    // The clear goes first, so what Claude reads is this prompt and not it run together with the old one.
+    assert.deepEqual(pty.keystrokes, [CLEAR_INPUT_BOX, "\u001b[200~hello \u001b[201~", "\r"]);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+  } finally {
+    await agent.close();
+    await rm(runtimeRoot, { force: true, recursive: true });
+  }
+});
+
+test("clears the input box even when nothing is showing in it", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-clear-empty-test-"));
+  let agent!: ClaudeTtyAgent;
+  let pty!: FakePty;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    pty = new FakePty(6200);
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    setImmediate(() => pty.emitData("\u001b[2J\u001b[H\u276f\r\n  \u23f8 manual mode on\r\n"));
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(createConnection([]), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, contextRefreshTimeoutMs: 0 });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/clear-empty", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }] });
+    await waitFor(() => pty !== undefined && pty.writes.length === 2);
+    // Unconditional, because the screen is sampled: a paste too recent to have been drawn is exactly the
+    // residue worth clearing, and an empty box costs nothing to clear.
+    assert.equal(pty.keystrokes[0], CLEAR_INPUT_BOX);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+  } finally {
+    await agent.close();
+    await rm(runtimeRoot, { force: true, recursive: true });
+  }
+});
 
 test("resubmits a prompt Claude leaves sitting in its input box", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-test-"));
