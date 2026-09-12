@@ -128,6 +128,69 @@ export const releaseStaleLocks = defineRpc({
   output: SessionsSchema,
 });
 
+/**
+ * What this host will do with a session in each project Paseo knows about, as `box-project ls` says
+ * it. `registered` has a box, and so credentials and a model; `host` is a workspace the allowlist
+ * keeps out here on purpose; `unregistered` is a checkout that resolves no box at all, which means a
+ * session in it is refused. Showing the difference before anyone tries is the whole point of it.
+ */
+export const BoxProjectSchema = z.object({
+  projectId: z.string(),
+  name: z.string(),
+  path: z.string(),
+  state: z.enum(["registered", "host", "unregistered"]),
+  /** The name to show: the host's own, which prefixes an allowlisted workspace with `host:`. */
+  display: z.string(),
+  /** The credential-broker boundary the box is in, or null for a project that has no box. */
+  boundary: z.string().nullable(),
+  /** Why it is not a box, in the host's words. */
+  reason: z.string().nullable(),
+});
+
+export const BoxProjectListSchema = z.object({
+  /** False on a host with no `box-project` at all, which is most of them; nothing below applies. */
+  available: z.boolean(),
+  /** Set when the tool is there and could not be asked; the list is then empty and means nothing. */
+  problem: z.string().nullable(),
+  projects: z.array(BoxProjectSchema),
+});
+
+export type BoxProjectListPayload = z.output<typeof BoxProjectListSchema>;
+
+export const listBoxProjects = defineRpc({
+  name: "claude-tty.box-project.list",
+  input: z.object({}),
+  output: BoxProjectListSchema,
+});
+
+/**
+ * One project's validations, re-run. `note` is neither pass nor fail: a fact about the machine that
+ * onboarding cannot fix and deliberately does not fail on, which would otherwise go unsaid.
+ */
+export const BoxProjectCheckSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  state: z.enum(["ok", "fail", "note"]),
+  detail: z.string(),
+});
+
+export const BoxProjectReportSchema = z.object({
+  project: z.string(),
+  /** False when box-project could not be run, or said nothing that parsed; `problem` has why. */
+  ran: z.boolean(),
+  ok: z.boolean(),
+  problem: z.string().nullable(),
+  checks: z.array(BoxProjectCheckSchema),
+});
+
+export type BoxProjectReportPayload = z.output<typeof BoxProjectReportSchema>;
+
+export const checkBoxProject = defineRpc({
+  name: "claude-tty.box-project.check",
+  input: z.object({ name: z.string() }),
+  output: BoxProjectReportSchema,
+});
+
 /** Removing the state directory either happens or throws, so what comes back is only what it did. */
 export const RemoveStateSchema = z.object({ detail: z.string() });
 
