@@ -355,6 +355,18 @@ export class ClaudeRuntime {
     if (!turn) return;
     this.cancelRequested = true;
     if (this.cancelTimer) clearTimeout(this.cancelTimer);
+    // A turn held open only for background work has no foreground to interrupt. Claude answered and went
+    // back to its prompt; the turn is this adapter's own bookkeeping, kept so the report that work still
+    // owes has something to arrive in. Escape there stops nothing -- a subagent runs in its own loop and
+    // outlives it -- and costs the turn before it, which Claude rewinds and puts back in the input box for
+    // the next paste to land on. So the hold is simply let go of. Paseo cancels before it replaces a turn
+    // and a message sent while a subagent runs arrives as exactly that, which makes this the path every
+    // such message takes rather than a corner of one.
+    if (this.backgroundHold) {
+      this.cancelTimer = null;
+      void this.finishCancelled();
+      return;
+    }
     if (!this.pty) {
       this.cancelTimer = null;
       void this.finishCancelled();

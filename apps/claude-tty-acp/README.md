@@ -167,6 +167,8 @@ The turn it opened is released with it, so the session takes the next prompt nor
 A screen that has painted nothing at all is not read as an empty box -- it says nothing either way -- and a prompt the box was seen to let go of between two samples is checked against the session's own activity before it is called lost.
 
 Cancellation is the same kind of impersonation: an Escape keystroke, plus a short fallback that ends the turn when no `Stop` hook follows.
+A turn held open only for background work is the exception and is ended without one: Claude has answered and gone back to its prompt, so there is no foreground to interrupt, and an Escape there stops nothing a subagent is doing while rewinding the turn Claude just finished and putting its prompt back in the input box.
+Since Paseo cancels before it replaces a turn, that is the path every message sent while a subagent is still running takes, which is what makes chatting with a session during its background work work at all.
 Changing the model, mode or effort while idle sends Ctrl-D, waits for the process to exit, and relaunches with `--resume`, which is why the change survives as a real flag rather than an in-band command.
 
 ### Output comes out of the transcript
