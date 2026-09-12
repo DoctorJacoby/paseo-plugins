@@ -6,6 +6,7 @@ import { readIdleTimeout } from "./idle-timeout.ts";
 import { enableLogFile, writeLog } from "./log.ts";
 import { cleanupAbandonedRuntimeDirectories } from "./runtime-directories.ts";
 import { useSettingsFile } from "./settings-document.ts";
+import { resolvePlacement } from "./session-placement.ts";
 
 export async function runAcpServer(settingsFile: string | null, answersDirectory: string | null = null): Promise<void> {
   // The daemon reads stderr and keeps none of it, so the server also writes its log to disk.
@@ -28,6 +29,9 @@ export async function runAcpServer(settingsFile: string | null, answersDirectory
 
   const connection = new AgentSideConnection((activeConnection) => {
     agent = new ClaudeTtyAgent(activeConnection, {
+      // Asking the host where a session runs is the serving adapter's alone: a test or the smoke
+      // harness has no boxes and no business shelling out to find that out.
+      resolvePlacement: (cwd) => resolvePlacement(cwd),
       // Nothing else will end the process: the connection is still open.
       onWorkspacesRemoved: () => {
         writeLog({ level: "warn", message: "Stopping the adapter: the directory of every session it holds is gone" });

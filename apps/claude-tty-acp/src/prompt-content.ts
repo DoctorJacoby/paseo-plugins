@@ -10,7 +10,17 @@ export type MaterializedPrompt = {
   files: string[];
 };
 
-export async function materializePrompt(content: ContentBlock[], directory: string, cwd: string): Promise<MaterializedPrompt> {
+/**
+ * `reference` is how a file this wrote is named to Claude. It is that file's own path unless Claude
+ * is in a container reading the directory through a mount of its own. What `files` holds stays host
+ * paths either way, because cleaning them up afterwards is this side's to do.
+ */
+export async function materializePrompt(
+  content: ContentBlock[],
+  directory: string,
+  cwd: string,
+  reference: (file: string) => string = (file) => file,
+): Promise<MaterializedPrompt> {
   const parts: string[] = [];
   const files: string[] = [];
   try {
@@ -23,7 +33,7 @@ export async function materializePrompt(content: ContentBlock[], directory: stri
         case "image": {
           const file = await writeAttachment(directory, `image-${index}${extensionForMime(block.mimeType)}`, Buffer.from(block.data, "base64"));
           files.push(file);
-          parts.push(`@${file}`);
+          parts.push(`@${reference(file)}`);
           break;
         }
         case "audio":
@@ -43,7 +53,7 @@ export async function materializePrompt(content: ContentBlock[], directory: stri
           const mimeType = resource.mimeType ?? ("text" in resource ? "text/plain" : "application/octet-stream");
           const file = await writeAttachment(directory, `resource-${index}${extensionForMime(mimeType)}`, data);
           files.push(file);
-          parts.push(`@${file}`);
+          parts.push(`@${reference(file)}`);
           break;
         }
       }
