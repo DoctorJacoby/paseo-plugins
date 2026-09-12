@@ -923,6 +923,11 @@ test("closes the tool calls a stopped session left running, and leaves the ones 
   assert.ok(updates[1]?.sessionUpdate === "tool_call_update");
   assert.equal(updates[1].toolCallId, "bash-tool");
   assert.equal(updates[1].status, "failed");
+  // Both carry something to fail with. A failed tool call the daemon is given a null error for is one
+  // its own schema has no branch for, and the response carrying it fails validation whole: the client
+  // loses the agent's entire history rather than this one card, and goes on losing it.
+  assert.ok(updates[0].rawOutput !== undefined && updates[0].rawOutput !== null, "a failed agent card carried no error");
+  assert.ok(updates[1].rawOutput !== undefined && updates[1].rawOutput !== null, "a failed tool call carried no error");
   assert.equal(translator.runningSubagents, 0);
 });
 

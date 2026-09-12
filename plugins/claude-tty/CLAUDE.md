@@ -90,6 +90,20 @@ On a throwaway 0.8.0 daemon with a fake ACP agent, the unwrapped provider reprod
 That is what the daemon's config-file ACP providers get, since they have no `steerActiveTurn` at all.
 Claude absorbing a message into the running turn, the way it does with text typed into its terminal, would need a path to the adapter that avoids the bridge's prompt admission, and there is none.
 
+## A tool call cancelled with the turn has to be `canceled`, not `failed`
+
+A `failed` tool call must carry a non-null error: `ToolCallFailedPayloadSchema` in `@getpaseo/protocol` is `error: NonNullUnknownSchema`, while the other three statuses take `error: null`.
+An item that breaks that is not dropped on its own — the whole `fetch_agent_timeline_response` fails validation, so the client refuses the *entire* history of that agent, and goes on refusing it for as long as the item is in the timeline.
+It shows as "Couldn't refresh agent history", with nothing logged on either side, on a session that is otherwise working perfectly. `paseo logs <agent>` reproduces it from the CLI.
+
+The bridge makes one on every cancelled turn. In `acp-internal/connection.js`, `terminalizeTransientItems` is handed `"canceled"` or `"completed"` and maps anything that is not `"completed"` to `"failed"`; `toolTimelineItem` then takes the error from `snapshot.output`, which a call that was still running never wrote.
+So `{ status: "failed", error: null }`, from a state the bridge had the right word for and threw away — the schema's fourth status, `canceled`, takes a null error.
+Paseo cancels a turn before it replaces one, and `server/steering.ts` makes that the path of every message sent mid-turn, so in a session with a subagent running this is one message away at any time.
+
+`server/tool-call-outcomes.ts` turns a failed tool call carrying no error back into a cancelled one. A genuine failure always carries its output as its error, so a failed call with none did not fail: it was still running when its turn ended.
+Its test drives the real bridge, and the canary beside it asserts the bridge's own behaviour, so both fail the day this is fixed upstream and the wrapper can go.
+The adapter had the same hole of its own: `settleOpenToolCalls` and a failed subagent card sent `tool_call_update` with no `rawOutput`, which is the same null error by the same route, and both now send one.
+
 ## The host owns the settings, and the adapter is told where they are
 
 `registerSettings` hands the daemon a schema and nothing else: it returns `void`, `PluginServerContext` has no way to read a value back, and the `settings.changed` the store emits travels to the *clients* — `subscribeSettings` in the daemon's `session.ts` turns it into a `plugin_settings_changed` broadcast — never back into the plugin runtime.
