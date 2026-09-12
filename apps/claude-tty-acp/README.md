@@ -51,6 +51,8 @@ The adapter inherits the Paseo daemon's environment.
 | `CLAUDE_BIN` | Absolute path to Claude when the daemon's `PATH` cannot find `claude`. |
 | `CLAUDE_CONFIG_DIR` | Existing Claude configuration, credentials, plugins, commands, skills, and transcript root. |
 | `CLAUDE_TTY_ACP_STATE_DIR` | Adapter session mappings and locks; defaults to the host's XDG state directory. |
+| `CLAUDE_TTY_HOST_SESSION` | `1` runs this agent's session beside the adapter even where the host would otherwise put it in a container. See [Sessions in a container](#sessions-in-a-container). |
+| `TOOLCHAIN_BOX_BIN` | The `toolchain-box` the adapter asks where a session runs; defaults to `~/.local/bin/toolchain-box`, and where there is none every session runs beside the adapter. |
 | `CLAUDE_TTY_ACP_IDLE_TIMEOUT_MS` | Stop an idle session's native Claude process after this many milliseconds. Overrides the Claude TTY plugin's saved setting; without either, the default is `3600000` (one hour). Set to `0` to disable suspension. A value that is not a whole number of milliseconds in range is logged and ignored rather than fatal. |
 | `XDG_STATE_HOME` | Base for adapter state when `CLAUDE_TTY_ACP_STATE_DIR` is unset. |
 
@@ -218,6 +220,26 @@ The adapter therefore checks the directory of every session it holds once a minu
 Every directory is watched for as long as its session lives, so one that comes back counts as there again and keeps the adapter standing.
 A directory that cannot be read for any other reason is still there, and no session is stopped over a failure to look.
 
+### Sessions in a container
+
+A host may decide that a session's working directory belongs in a container rather than beside the adapter.
+The adapter does not decide this and does not look: it runs `toolchain-box session <cwd>` and obeys the answer, because a working directory is something a container can write and a session that could talk its way onto the host would defeat the arrangement.
+A host with no such tool runs every session beside the adapter, which is what the adapter did before any of this.
+
+The answer is one of three.
+**Box** names the container, the `~/.claude` it writes into as the host sees it, and where the container mounts that; the adapter starts the box and then spawns `claude` through `toolchain-box exec`, which is a `podman exec` into it.
+The session is still the interactive TUI under a pty — `podman exec -t` carries the adapter's pty in — and a box that will not start fails the session rather than falling back to the host.
+**Host** runs it here.
+**Refuse** fails `session/new` with the host's reason, and `CLAUDE_TTY_HOST_SESSION=1` is the way to take the host for one agent anyway; Paseo's `paseo run --env` puts it in the agent's environment.
+
+Two things follow from the container not sharing this host's filesystem or its loopback:
+
+- Everything Claude reads at launch — its settings, the hook client, the status-line file, prompt attachments — goes in a runtime directory inside that mounted `~/.claude` rather than in this host's temporary directory, and every path written into the settings is the path the container sees. The adapter goes on reading its own side of the same files, and a transcript Claude reports at its own path is read back at the host's.
+- The hook server's loopback port is unreachable from the container, so a boxed session gets a second listener on a unix socket in that same runtime directory. It carries the same per-session route and is trusted no further than the port is.
+
+`podman exec` proxies no signals, so nothing about killing a session would reach the process inside the box.
+That is why the spawn goes through `toolchain-box exec` rather than a podman command line of the adapter's own: it leaves behind the watchdog that stops the process tree in the box once the client is gone, and a second copy of that mechanism here is the last thing worth having.
+
 ### Hooks carry everything interactive
 
 The adapter runs a single loopback HTTP server whose URL carries a per-process secret and a per-session route, and the generated hook client posts each hook payload to it and hands the JSON answer back to Claude.
@@ -231,7 +253,7 @@ The adapter runs a single loopback HTTP server whose URL carries a per-process s
 
 The state directory holds one JSON file per session, mapping the Paseo session ID to Claude's own session ID, cwd, model, mode and effort, plus a lock file naming the process that has the session open.
 A file written before the effort selector existed names none, which reads as the default effort.
-Runtime directories live in the host's temporary directory, record their owner PID, and are swept on the next adapter startup if that process is gone.
+Runtime directories live in the host's temporary directory — or, for a session in a container, in the `~/.claude` that container mounts — record their owner PID, and are swept on the next adapter startup if that process is gone.
 
 ## Limitations
 

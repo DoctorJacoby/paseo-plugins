@@ -16,6 +16,8 @@ export type HookResponse = Record<string, unknown>;
 export type HookHandler = (payload: HookPayload) => Promise<HookResponse>;
 export type HookRegistration = {
   endpoint: string;
+  /** The same route as a request path, for a client reaching this server over a unix socket rather than the loopback port. */
+  requestPath: string;
   addSessionId: (sessionId: string) => void;
   unregister: () => void;
 };
@@ -27,6 +29,7 @@ export class HookServer {
   private server: http.Server | null = null;
   private endpoint: string | null = null;
   private startPromise: Promise<string> | null = null;
+  private readonly sockets = new Map<string, http.Server>();
 
   async start(): Promise<string> {
     if (this.endpoint) return this.endpoint;
@@ -63,6 +66,37 @@ export class HookServer {
     return this.endpoint;
   }
 
+  /**
+   * A second way in to the same routes, over a unix socket, for a session whose Claude runs in a
+   * container: the loopback port above is this host's, and a box reaches none of it. The socket
+   * goes in a directory the box mounts, so what can speak to it is that box — which is the session
+   * itself — and the route token is still what says which session a hook belongs to.
+   *
+   * Nothing is trusted from the socket that is not trusted from the port: a payload is a payload.
+   */
+  async listenOn(socketPath: string): Promise<void> {
+    if (this.sockets.has(socketPath)) return;
+    const server = http.createServer((request, response) => {
+      void this.handleRequest(request, response);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+    this.sockets.set(socketPath, server);
+    writeLog({ level: "debug", message: "Started hook socket for a boxed session", socketPath });
+  }
+
+  async stopListeningOn(socketPath: string): Promise<void> {
+    const server = this.sockets.get(socketPath);
+    this.sockets.delete(socketPath);
+    if (!server || !server.listening) return;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+
   register(sessionId: string, handler: HookHandler): HookRegistration {
     if (!this.endpoint) throw new Error("Hook server must be started before registering a session");
     if (this.handlers.has(sessionId)) throw new Error(`Hook handler already registered for Claude session ${sessionId}`);
@@ -72,6 +106,7 @@ export class HookServer {
     this.routes.set(route, handler);
     return {
       endpoint: `${this.endpoint}/${route}`,
+      requestPath: `/hooks/${this.token}/${route}`,
       addSessionId: (nextSessionId) => {
         const existing = this.handlers.get(nextSessionId);
         if (existing && existing !== handler) throw new Error(`Hook handler already registered for Claude session ${nextSessionId}`);
@@ -96,6 +131,7 @@ export class HookServer {
   async close(): Promise<void> {
     this.handlers.clear();
     this.routes.clear();
+    await Promise.all([...this.sockets.keys()].map((socketPath) => this.stopListeningOn(socketPath)));
     const server = this.server;
     this.server = null;
     this.endpoint = null;
