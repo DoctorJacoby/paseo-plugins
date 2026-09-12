@@ -1,8 +1,11 @@
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { APP_NAME } from "./constants.ts";
 
-const PREFIX = "claude-tty-acp-";
+// Owned directories are found again by this prefix, and abandoned ones swept, so a variant
+// built beside this one must not sweep the other's: APP_NAME, not a literal.
+const PREFIX = `${APP_NAME}-`;
 const MISSING_OWNER_GRACE_MS = 60 * 60 * 1000;
 
 export function runtimePrefix(root: string): string {
