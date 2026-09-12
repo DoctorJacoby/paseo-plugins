@@ -8,6 +8,9 @@ That log is the plugin's; the adapter's is `~/.local/state/claude-tty-acp/logs/c
 `paseo plugin add <repo> --path plugins/claude-tty` is the supported install: the daemon clones into a staging directory, runs the manifest's `build` commands there with the plugin directory as the cwd, and only then places and starts it.
 `pnpm` walks up to the workspace root from that cwd, which is why `pnpm install --frozen-lockfile` and `pnpm --filter @paseo-plugins/claude-tty-acp build` are enough (verified by running both from `plugins/claude-tty`).
 A directory install runs no build at all, so a clone has to be built by hand before it is added.
+Which is also why the ID is stamped into the checkout by `pnpm identity <id>` (`scripts/set-identity.mjs`) rather than generated: there is no build step to generate it in on the path that matters, and a generated file would be missing exactly where it is needed.
+It writes `paseo-plugin.json`, `shared/identity.ts` and the adapter's `APP_NAME` — the places the ID has to appear, none of which can read another — and `pnpm identity --check` is the guard; stamping the ID a checkout already has is a no-op to the byte.
+A second checkout stamped `claude-tty-dev` is the better answer to the reload problem above when somebody else's sessions are running: see the README's "A second copy, to develop against".
 
 To exercise a handler without a client, invoke it over the daemon's own plugin RPC:
 

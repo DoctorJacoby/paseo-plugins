@@ -1,10 +1,17 @@
 import os from "node:os";
 import path from "node:path";
+import { ADAPTER_STATE_DIRECTORY, PLUGIN_ID } from "../shared/identity.ts";
 import { SETTINGS_ID } from "../shared/settings.ts";
 
 export type Env = Record<string, string | undefined>;
 
-export const PLUGIN_ID = "claude-tty";
+export { PLUGIN_ID };
+
+/**
+ * The adapter's directory in this checkout, and the executable in it. Not the plugin's ID and not
+ * the state directory: both of those follow a variant's name, while this one names files that are
+ * here and stay put whatever the copy is called.
+ */
 export const ADAPTER_BINARY_NAME = "claude-tty-acp";
 export const ADAPTER_ENTRY_NAME = "cli.js";
 
@@ -36,7 +43,7 @@ export function defaultStateDirectory(env: Env = process.env): string {
   const configured = env.CLAUDE_TTY_ACP_STATE_DIR?.trim();
   if (configured) return configured;
   const stateHome = env.XDG_STATE_HOME?.trim() || path.join(env.HOME || os.homedir(), ".local", "state");
-  return path.join(stateHome, "claude-tty-acp");
+  return path.join(stateHome, ADAPTER_STATE_DIRECTORY);
 }
 
 /**
