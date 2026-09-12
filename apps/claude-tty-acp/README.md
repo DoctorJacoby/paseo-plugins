@@ -230,7 +230,8 @@ The answer is one of three.
 **Box** names the container, the `~/.claude` it writes into as the host sees it, and where the container mounts that; the adapter starts the box and then spawns `claude` through `toolchain-box exec`, which is a `podman exec` into it.
 The session is still the interactive TUI under a pty — `podman exec -t` carries the adapter's pty in — and a box that will not start fails the session rather than falling back to the host.
 **Host** runs it here.
-**Refuse** fails `session/new` with the host's reason, and `CLAUDE_TTY_HOST_SESSION=1` is the way to take the host for one agent anyway; Paseo's `paseo run --env` puts it in the agent's environment.
+**Refuse** opens the session and ends its first turn instead, so that one refusal is not remembered against the provider itself, and `CLAUDE_TTY_HOST_SESSION=1` is the way to take the host for one agent anyway; Paseo's `paseo run --env` puts it in the agent's environment.
+The message is the host's: its `reason` for this directory, and a `guidance` line — how a project is given a container there, and where that policy is written — which only the host can know and which the adapter passes through untouched. A host that sends no `guidance` gets the adapter's own generic advice instead.
 
 Two things follow from the container not sharing this host's filesystem or its loopback:
 
