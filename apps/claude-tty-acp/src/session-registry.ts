@@ -177,6 +177,8 @@ export class ClaudeSession {
     const reader = new TranscriptReader(this.currentClaudeSessionId, this.cwd, { configDir });
     const result = await reader.read();
     await this.translator.translate(result.records);
+    // A timeline that came back empty is otherwise indistinguishable from one that was never sent.
+    writeLog({ level: "info", message: "Replayed a loaded session's history", sessionId: this.id, records: result.records.length });
     // The lock is this session's proof that no Claude process is behind the history just replayed,
     // so a tool call the transcript leaves open — an agent launched to run on its own and never
     // reported — is finished as far as Paseo is concerned, whatever the record says.
@@ -472,14 +474,9 @@ export class SessionRegistry {
       autoAccept: state.autoAccept ?? null,
       persisted: true,
     });
-    try {
-      await session.replayHistory();
-      return session;
-    } catch (error) {
-      this.sessions.delete(sessionId);
-      await session.close();
-      throw error;
-    }
+    // The history is not replayed here. It goes out after `session/load` has answered, because
+    // nothing sent before that answer has a session to land on -- see `ClaudeTtyAgent.restoreSession`.
+    return session;
   }
 
   get(sessionId: string): ClaudeSession | null {

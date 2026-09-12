@@ -83,6 +83,9 @@ test("loads history lazily, resumes Claude, and follows clear session rotation",
   try {
     await agent.loadSession({ sessionId: acpSessionId, cwd, mcpServers: [] });
     assert.equal(spawns.length, 0);
+    // The history follows the response rather than preceding it, so that the client has a session to
+    // put it on; the command list closes the replay, which is what makes it the thing to wait for.
+    await waitForCommands(updates);
     assert.deepEqual(updates.map((notification) => notification.update.sessionUpdate), ["user_message_chunk", "agent_message_chunk", "available_commands_update"]);
 
     const turn = agent.prompt({ sessionId: acpSessionId, prompt: [{ type: "text", text: "/clear" }] });
@@ -152,6 +155,7 @@ test("closes the background agent a loaded session's history leaves running", as
 
   try {
     await agent.loadSession({ sessionId: acpSessionId, cwd, mcpServers: [] });
+    await waitForCommands(updates);
     const toolCalls = updates.map((notification) => notification.update).filter((update) => update.sessionUpdate === "tool_call_update");
     const closed = toolCalls.at(-1);
     assert.ok(closed?.sessionUpdate === "tool_call_update");
@@ -162,6 +166,53 @@ test("closes the background agent a loaded session's history leaves running", as
     await rm(root, { force: true, recursive: true });
   }
 });
+
+test("sends a loaded session's history only after session/load has answered", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "persistence-ordering-test-"));
+  const stateDirectory = path.join(root, "state");
+  const configDirectory = path.join(root, "claude");
+  const runtimeRoot = path.join(root, "runtime");
+  await mkdir(runtimeRoot, { recursive: true });
+  const acpSessionId = "55555555-5555-4555-8555-555555555555";
+  const claudeSessionId = "44444444-4444-4444-8444-444444444444";
+  const cwd = "/work/ordering";
+  const projectDirectory = path.join(configDirectory, "projects", escapeProjectDirName(cwd));
+  await mkdir(projectDirectory, { recursive: true });
+  await writeFile(
+    path.join(projectDirectory, `${claudeSessionId}.jsonl`),
+    `${JSON.stringify({ type: "user", uuid: "u1", message: { content: [{ type: "text", text: "what did we decide" }] } })}\n`,
+  );
+  await new StateStore(stateDirectory).save({ version: 1, acpSessionId, claudeSessionId, cwd, model: "inherit", mode: "default", lastActivity: 1 });
+  const updates: SessionNotification[] = [];
+  const connection = {
+    sessionUpdate: async (notification: SessionNotification) => {
+      updates.push(notification);
+    },
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
+  const agent = new ClaudeTtyAgent(connection, { claudeConfigDir: configDirectory, runtimeRoot, stateDirectory, startupTimeoutMs: 500, readinessTimeoutMs: 0 });
+
+  try {
+    await agent.loadSession({ sessionId: acpSessionId, cwd, mcpServers: [] });
+    // The client has no session to put an update on until this call has answered, so the daemon drops
+    // whatever arrived first -- and a resumed session comes up with an empty timeline while Claude
+    // still holds the whole conversation.
+    assert.equal(updates.length, 0, "nothing may be sent before session/load has answered");
+    await waitForCommands(updates);
+    assert.deepEqual(
+      updates.map((notification) => notification.update.sessionUpdate),
+      ["user_message_chunk", "available_commands_update"],
+    );
+  } finally {
+    await agent.close();
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+/** A loaded session's replay is finished once its command list has gone out behind the history. */
+async function waitForCommands(updates: SessionNotification[]): Promise<void> {
+  await waitFor(() => updates.some((notification) => notification.update.sessionUpdate === "available_commands_update"));
+}
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1_000;
