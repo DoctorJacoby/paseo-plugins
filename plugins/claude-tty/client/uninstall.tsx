@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import React from "react";
 import { Text, View } from "react-native";
 import * as contracts from "../shared/contracts.ts";
+import { PLUGIN_ID } from "../shared/identity.ts";
 import { fontSize, leading, spacing, type Palette } from "./theme.ts";
 import { ConfirmButton } from "./confirm.tsx";
 import { Monospace } from "./status.tsx";
@@ -31,7 +32,7 @@ export function RemoveStateSection({ palette, onSettled }: { palette: Palette; o
         <Text style={{ color: palette.foregroundMuted, fontSize: fontSize.sm, lineHeight: leading(fontSize.sm) }}>
           Deletes the state directory, so no agent resumes the Claude conversation it was holding.
           Refused while a session is open. Claude's own configuration, credentials and transcripts
-          are never touched, and taking the provider away is "paseo plugin remove claude-tty" rather
+          are never touched, and taking the provider away is {`"paseo plugin remove ${PLUGIN_ID}"`} rather
           than anything here.
         </Text>
         <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>

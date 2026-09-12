@@ -4,12 +4,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React from "react";
 import { Text, View } from "react-native";
 import * as contracts from "../shared/contracts.ts";
+import { PLUGIN_ID } from "../shared/identity.ts";
 import type { DoctorPayload } from "../shared/contracts.ts";
 import { fontSize, leading, spacing, type Palette } from "./theme.ts";
 import { Monospace, ReadingRow } from "./status.tsx";
 import { Button } from "./ui.tsx";
 
-export const DOCTOR_QUERY_KEY = ["claude-tty", "doctor"];
+export const DOCTOR_QUERY_KEY = [PLUGIN_ID, "doctor"];
 
 export function DoctorSection({ palette }: { palette: Palette }) {
   const queryClient = useQueryClient();

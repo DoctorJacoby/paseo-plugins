@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { APP_NAME } from "./constants.ts";
 
 export type PersistedSession = {
   version: 1;
@@ -65,7 +66,7 @@ export function defaultStateDirectory(env: NodeJS.ProcessEnv = process.env): str
   const configured = env.CLAUDE_TTY_ACP_STATE_DIR?.trim();
   if (configured) return configured;
   const stateHome = env.XDG_STATE_HOME?.trim() || path.join(env.HOME || os.homedir(), ".local", "state");
-  return path.join(stateHome, "claude-tty-acp");
+  return path.join(stateHome, APP_NAME);
 }
 
 function isPersistedSession(value: unknown): value is PersistedSession {
