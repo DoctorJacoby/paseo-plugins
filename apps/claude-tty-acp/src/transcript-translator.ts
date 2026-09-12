@@ -14,6 +14,7 @@ import { questionText } from "./question-text.ts";
 import {
   launchedAgent,
   launchedBackgroundShell,
+  messagedAgent,
   notificationFailed,
   parseTaskNotifications,
   subagentProse,
@@ -366,6 +367,9 @@ export class TranscriptTranslator {
     // A background command answers with the id its report will name, and goes on running after it.
     const shell = launchedBackgroundShell(record.toolUseResult);
     if (shell !== null) this.trackBackgroundShell(shell.taskId, toolCallId);
+    // Messaging an agent is the only record that puts one back to work after its own report closed it.
+    const messaged = messagedAgent(record.toolUseResult);
+    if (messaged !== null) await this.resumeSubagentCard(messaged.agentId);
     // Stopped work writes no report and sends no notification, so nothing else ever ends it: it would go on being counted as running and hold every later turn open to its bound.
     // The stop names an agent or a background command through the one `task_id`, so it is offered to both.
     const stopped = this.stoppedTasksByToolCall.get(toolCallId);
@@ -428,10 +432,12 @@ export class TranscriptTranslator {
    * A replayed launch does not start a background command over: one that has already reported, or that a turn gave up waiting on, is recorded here as settled and is not waited on again.
    * Nor is one whose launch is only history — a session being loaded replays commands that stopped with the process that ran them.
    */
-  private trackBackgroundShell(taskId: string, toolCallId: string): void {
+  private trackBackgroundShell(taskId: string, toolCallId: string | null): void {
     if (this.backgroundShells.has(taskId)) return;
     this.backgroundShells.set(taskId, { outstanding: this.trackingBackgroundWork });
-    this.backgroundShellsByToolCall.set(toolCallId, taskId);
+    // Null for a command an agent backgrounded: the tool call that launched it is in that agent's own
+    // transcript, not this session's, and its notification names it by task id rather than by call.
+    if (toolCallId !== null) this.backgroundShellsByToolCall.set(toolCallId, taskId);
     this.lastBackgroundShellActivity = Date.now();
   }
 
@@ -466,6 +472,11 @@ export class TranscriptTranslator {
   private logSubagentRecord(card: SubagentCard, record: TranscriptRecord, prefix: string): boolean {
     const nested = launchedAgent(record.toolUseResult);
     if (nested !== null) this.adoptSubagent(nested.agentId, card);
+    // An agent that backgrounds a command reports the moment it has launched it, so its own report says
+    // nothing about whether the work is over. The command notifies this session directly when it ends --
+    // the notification names it by task id -- so it is waited on here exactly as one of the session's own.
+    const backgrounded = launchedBackgroundShell(record.toolUseResult);
+    if (backgrounded !== null) this.trackBackgroundShell(backgrounded.taskId, null);
     const message = objectValue(record.message);
     const content = message?.content;
     if (stringValue(record.type) !== "assistant" || !Array.isArray(content)) return false;
@@ -537,6 +548,28 @@ export class TranscriptTranslator {
 
   private letGoOfBackgroundShells(): void {
     for (const shell of this.backgroundShells.values()) shell.outstanding = false;
+  }
+
+  /**
+   * Puts an agent that has already reported back to work.
+   *
+   * Its notification closed its card, which was right at the time -- Claude notifies each time an agent
+   * stops, and the same agent may notify many times over, because a message sent to one starts it again.
+   * Nothing else records that restart, so a card left closed stops holding the session's turn open while
+   * the agent it stands for is running, and the session reads as done with work still going.
+   *
+   * Only a card this session already knows is reopened, so a message naming something that is not one of
+   * its agents invents nothing, and never one a turn has given up on: that turn stopped counting it
+   * deliberately, and every later turn would hold for a poll interval and give up again in the same breath.
+   */
+  private async resumeSubagentCard(agentId: string): Promise<void> {
+    const card = this.subagents.get(agentId);
+    if (card === undefined || card.status === "in_progress" || card.abandoned) return;
+    card.status = "in_progress";
+    card.outstanding = this.trackingBackgroundWork;
+    this.lastSubagentActivity = Date.now();
+    if (card.toolCallId !== null) this.openToolCalls.add(card.toolCallId);
+    await this.publishSubagent(card);
   }
 
   /** Records how an agent went, on the card that has to go on saying so after Claude has stopped. */
