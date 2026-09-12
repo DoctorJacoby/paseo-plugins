@@ -8,6 +8,7 @@ import { withPermissionCards } from "./permission-bridge.ts";
 import { withSteerFallback } from "./steering.ts";
 import { subagentSource } from "./subagents.ts";
 import { withSubagentSessions } from "./subsessions.ts";
+import { withCancelledToolCalls } from "./tool-call-outcomes.ts";
 import { toolCallDetails } from "./tool-details.ts";
 
 /**
@@ -82,15 +83,18 @@ export function claudeTtyProvider(): ProviderRegistration {
       }).connect(request);
       // The steer fallback goes innermost, because it stands in for the bridge. The cards go next, so
       // the two wrappers outside read tool calls that already say what they were. The subsessions go
-      // outermost, so what the daemon is told this connection can do is what the wrapper that emits
-      // the child sessions has already agreed to.
-      return withSubagentSessions(
-        withPermissionCards(
-          details.wrap(withSteerFallback(connection, request.capabilities)),
-          cardAnswersDirectory(defaultStateDirectory()),
+      // above those, so what the daemon is told this connection can do is what the wrapper that emits
+      // the child sessions has already agreed to. The outcomes go outermost, because an item the
+      // daemon will not accept has to be repaired wherever in the stack it was made.
+      return withCancelledToolCalls(
+        withSubagentSessions(
+          withPermissionCards(
+            details.wrap(withSteerFallback(connection, request.capabilities)),
+            cardAnswersDirectory(defaultStateDirectory()),
+          ),
+          subagentSource(),
+          request.capabilities,
         ),
-        subagentSource(),
-        request.capabilities,
       );
     },
   };

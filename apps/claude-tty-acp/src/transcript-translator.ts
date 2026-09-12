@@ -66,6 +66,8 @@ const AGENT_TOOLS = new Set(["Agent", "Task"]);
 const STOP_TASK_TOOL = "TaskStop";
 
 /** The last step on the card of a subagent whose session stopped before it said how it went. */
+/** What a tool call still open when its session stopped is failed with, since nothing will report on it. */
+const STOPPED_TOOL_CALL = "The session stopped before this tool call reported.";
 const UNREPORTED_AGENT = "Claude stopped before this agent reported back.";
 
 /** The last step on the card of a subagent the session it runs in stopped on purpose. */
@@ -633,7 +635,7 @@ export class TranscriptTranslator {
     }
     for (const toolCallId of [...this.openToolCalls]) {
       this.openToolCalls.delete(toolCallId);
-      await this.send({ sessionUpdate: "tool_call_update", toolCallId, status: "failed" });
+      await this.send({ sessionUpdate: "tool_call_update", toolCallId, status: "failed", rawOutput: { error: STOPPED_TOOL_CALL } });
     }
   }
 
@@ -647,6 +649,10 @@ export class TranscriptTranslator {
       toolCallId: card.toolCallId,
       status: card.status,
       content: [{ type: "content", content: { type: "text", text } }],
+      // A failed tool call the daemon is given no error for is one it cannot put in a timeline at all:
+      // its schema wants a non-null error there, and the response carrying the item fails validation
+      // whole, so the client refuses the agent's entire history rather than this one card.
+      ...(card.status === "failed" ? { rawOutput: { error: text } } : {}),
     });
   }
 
