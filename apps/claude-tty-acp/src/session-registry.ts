@@ -20,6 +20,7 @@ import {
   offeredModeId,
 } from "./session-options.ts";
 import { SessionLock } from "./session-lock.ts";
+import { type Placement, unboxedPlacement } from "./session-placement.ts";
 import { type PersistedSession, StateStore } from "./state-store.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import { TranscriptTranslator } from "./transcript-translator.ts";
@@ -32,6 +33,12 @@ export type SessionRegistryDependencies = RuntimeDependencies & {
    * Left out in production, where the timeout is read per suspension so a change in Paseo reaches live sessions.
    */
   idleTimeoutMs?: number;
+  /**
+   * Where a session with this working directory runs. Left out by anything that is not the
+   * adapter's own process — the tests, the smoke harness — and those sessions run beside it, which
+   * is what they have always done.
+   */
+  resolvePlacement?: (cwd: string) => Promise<Placement>;
 };
 
 /** How long a suspension stands aside when the session is busy or someone still has a card to answer. */
@@ -59,6 +66,8 @@ export class ClaudeSession {
   private readonly connection: AgentSideConnection;
   private readonly hooks: HookServer;
   private readonly runtimeDependencies: RuntimeDependencies;
+  private readonly resolveOwnPlacement: (cwd: string) => Promise<Placement>;
+  private placementPromise: Promise<Placement> | null = null;
   private readonly fixedIdleTimeoutMs: number | undefined;
   private readonly stateStore: StateStore;
   private readonly lock: SessionLock;
@@ -86,8 +95,9 @@ export class ClaudeSession {
     this.persisted = options.persisted;
     this.connection = connection;
     this.hooks = hooks;
-    const { idleTimeoutMs, ...runtimeDependencies } = dependencies;
+    const { idleTimeoutMs, resolvePlacement: resolveOwnPlacement, ...runtimeDependencies } = dependencies;
     this.runtimeDependencies = runtimeDependencies;
+    this.resolveOwnPlacement = resolveOwnPlacement ?? (async (cwd) => unboxedPlacement(cwd));
     this.fixedIdleTimeoutMs = idleTimeoutMs;
     this.stateStore = stateStore;
     this.lock = new SessionLock(this.id, stateStore.locksDirectory);
@@ -96,6 +106,19 @@ export class ClaudeSession {
 
   get started(): boolean {
     return this.runtime?.started ?? false;
+  }
+
+  /**
+   * Where this session runs, asked of the host once and then kept: a checkout does not change boxes
+   * under a session. A refusal is not kept, because it is the answer that has to be given again if
+   * the host was merely unreachable for a moment.
+   */
+  placement(): Promise<Placement> {
+    this.placementPromise ??= this.resolveOwnPlacement(this.cwd).catch((error: unknown) => {
+      this.placementPromise = null;
+      throw error;
+    });
+    return this.placementPromise;
   }
 
   get models() {
@@ -113,11 +136,13 @@ export class ClaudeSession {
   prompt(content: ContentBlock[]): Promise<PromptResponse> {
     const activityVersion = this.beginActivity();
     const result = this.exclusive(async () => {
+      const placement = await this.placement();
       await this.lock.acquire();
       const resume = this.persisted;
       await this.save();
       this.runtime ??= new ClaudeRuntime(this.id, this.currentClaudeSessionId, this.cwd, this.connection, this.hooks, {
         ...this.runtimeDependencies,
+        placement,
         resume,
         model: this.model,
         mode: this.mode,
@@ -135,8 +160,9 @@ export class ClaudeSession {
   }
 
   async replayHistory(): Promise<void> {
+    const configDir = await this.configDirectory();
     await this.lock.acquire();
-    const reader = new TranscriptReader(this.currentClaudeSessionId, this.cwd, { configDir: this.runtimeDependencies.claudeConfigDir });
+    const reader = new TranscriptReader(this.currentClaudeSessionId, this.cwd, { configDir });
     const result = await reader.read();
     await this.translator.translate(result.records);
     // The lock is this session's proof that no Claude process is behind the history just replayed,
@@ -145,8 +171,17 @@ export class ClaudeSession {
     await this.translator.settleOpenToolCalls();
   }
 
+  /**
+   * The `~/.claude` this session's transcripts and its skills are in. A boxed session's is the
+   * box's own, which is a directory of this host's that the box mounts, so a reader out here finds
+   * both where it always looked — one level along.
+   */
+  private async configDirectory(): Promise<string | undefined> {
+    return this.runtimeDependencies.claudeConfigDir ?? (await this.placement()).configDir;
+  }
+
   async emitCommands(): Promise<void> {
-    const availableCommands = await discoverCommands(this.cwd, this.runtimeDependencies.claudeConfigDir);
+    const availableCommands = await discoverCommands(this.cwd, await this.configDirectory());
     await this.connection.sessionUpdate({
       sessionId: this.id,
       update: { sessionUpdate: "available_commands_update", availableCommands },
