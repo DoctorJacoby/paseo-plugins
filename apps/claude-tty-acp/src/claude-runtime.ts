@@ -57,6 +57,10 @@ const BRACKETED_PASTE_END = "\u001b[201~";
 // Claude keeps its completion menu open while the cursor sits at the end of an @mention or a /command, and the submit key then picks an entry instead of sending the prompt.
 // A trailing space closes the menu, so every paste ends with one.
 const COMPLETION_DISMISS = " ";
+// Claude appends a bracketed paste to whatever its input box already holds rather than replacing it, so a
+// prompt pasted into a box with something left in it reaches Claude as the two run together. Ctrl-U is what
+// empties it, and costs nothing on the empty box that is the ordinary case.
+const CLEAR_INPUT_BOX = "\u0015";
 const ESCAPE = "\u001b";
 const CARRIAGE_RETURN = "\r";
 const CONTROL_D = "\u0004";
@@ -857,6 +861,32 @@ export class ClaudeRuntime {
   }
 
   /**
+   * Empties Claude's input box so the paste that follows is the whole of what Claude reads.
+   *
+   * The box is not reliably empty when a prompt arrives. Interrupting a turn puts the prompt it
+   * interrupted back for editing, and a submit a cancel abandons between its paste and its Enter leaves
+   * that paste behind; Paseo interrupts before it replaces a turn, so both are one message away in any
+   * session the daemon is steering. What Claude then receives is the two run together as a single
+   * prompt nobody wrote, sent from before the turn the interrupt rewound.
+   *
+   * The key goes in whatever the screen says, because the screen is sampled and a paste too recent to
+   * have been rendered is exactly the residue worth clearing; the snapshot is read only to name it in
+   * the log, since a box that had anything in it is worth a line either way.
+   */
+  private clearInputBox(): void {
+    const held = inputBoxContent(this.screen.snapshot());
+    if (held) {
+      writeLog({
+        level: "warn",
+        message: "Cleared something out of Claude's input box before sending a prompt",
+        sessionId: this.sessionId,
+        held: held.slice(0, PROMPT_ECHO_CHARS),
+      });
+    }
+    this.pty?.write(CLEAR_INPUT_BOX);
+  }
+
+  /**
    * Puts the prompt in Claude's input box and sends it, and says so when it could not.
    *
    * Every way a turn ends is a hook Claude fires, so a prompt Claude never took ends nothing: the turn
@@ -866,6 +896,7 @@ export class ClaudeRuntime {
    */
   private async submit(text: string): Promise<void> {
     const activityBefore = this.activityAt;
+    this.clearInputBox();
     this.pty?.write(`${BRACKETED_PASTE_START}${text}${COMPLETION_DISMISS}${BRACKETED_PASTE_END}`);
     const echo = promptEcho(text);
     let pasted = await this.screenSettles((screen) => inputBoxHolds(screen, echo), PASTE_ECHO_MS);
@@ -1150,13 +1181,18 @@ function inputBoxVisible(screen: string): boolean {
 }
 
 // The last prompt marker on screen is Claude's input box; the ones above it are prompts it has already taken.
-function inputBoxHolds(screen: string, echo: string): boolean {
+// Null where the screen has no box on it at all, which says nothing about what Claude is holding.
+function inputBoxContent(screen: string): string | null {
   const lines = screen.split("\n");
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const match = /^\s*❯\s?(.*)$/.exec(lines[index]!);
-    if (match) return match[1]!.trim().startsWith(echo);
+    if (match) return match[1]!.trim();
   }
-  return false;
+  return null;
+}
+
+function inputBoxHolds(screen: string, echo: string): boolean {
+  return inputBoxContent(screen)?.startsWith(echo) ?? false;
 }
 
 // Registering a status line makes Claude drop most footer hints, `? for shortcuts` among them, so that alternative cannot match in an adapter-launched session.

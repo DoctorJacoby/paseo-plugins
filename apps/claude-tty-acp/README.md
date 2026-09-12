@@ -154,7 +154,10 @@ Slash commands are the one thing the adapter never asks Claude for: an interacti
 ### Prompts go in as keystrokes
 
 A prompt is flattened into one block of text: images and embedded resources become files in the runtime directory referenced as `@path`, and host-local resource links become `@path` directly.
-The adapter writes that text into the PTY wrapped in bracketed paste, waits briefly, then writes Enter, exactly as a person pasting into the terminal would.
+The adapter clears Claude's input box with Ctrl-U, writes that text into the PTY wrapped in bracketed paste, waits briefly, then writes Enter, exactly as a person pasting into the terminal would.
+The clear is what keeps a prompt from being read as the end of another one: Claude appends a bracketed paste to whatever the box already holds, and the box is not reliably empty -- interrupting a turn puts the prompt it interrupted back for editing, and a submit a cancel abandons between its paste and its Enter leaves that paste behind.
+Paseo interrupts before it replaces a turn, so in a session it is steering both are one message away, and what Claude would otherwise receive is the two run together as a single prompt nobody wrote.
+It goes in whatever the screen shows, because the screen is sampled and a paste too recent to have been drawn is exactly the residue worth clearing; a box that did have something in it is named in the log.
 The paste ends with a space so Claude's completion menu is closed rather than swallowing that Enter, and the adapter watches its input box on the headless screen and presses Enter again while the prompt is still sitting there, because Claude drops the key while it is settling a paste.
 
 That echo is also what says the prompt went in at all, and it is not always prompt: Claude reads a bracketed paste at once but only shows it a render later, and on a loaded host that render is what slips.
