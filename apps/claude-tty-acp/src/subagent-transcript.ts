@@ -36,6 +36,21 @@ export function launchedAgent(toolUseResult: unknown): { agentId: string; runnin
   return { agentId, running: record?.status === "async_launched" };
 }
 
+/**
+ * The agent a tool result sent a message to, which is the one thing that says an agent whose card is
+ * closed is going to run again. Claude names it outright when the message resumes a stopped agent, and
+ * names it in the pin it answers with when the message is queued for one that is still going. Both are
+ * read the same way: the card is reopened, and the agent's next notification closes it again.
+ */
+export function messagedAgent(toolUseResult: unknown): { agentId: string } | null {
+  const record = asRecord(toolUseResult);
+  const resumed = record?.resumedAgentId;
+  if (typeof resumed === "string" && resumed !== "") return { agentId: resumed };
+  const pinned = asRecord(record?.pin)?.id;
+  if (typeof pinned === "string" && pinned !== "") return { agentId: pinned };
+  return null;
+}
+
 /** The id a background `Bash` result carries, which its notification will name. */
 export function launchedBackgroundShell(toolUseResult: unknown): { taskId: string } | null {
   const record = asRecord(toolUseResult);
