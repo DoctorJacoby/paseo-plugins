@@ -68,6 +68,18 @@ export class ClaudeTtyAgent implements Agent {
     }
     const session = this.sessions.create(params.cwd);
     await session.refreshAutoAccept({ publish: false });
+    // Where the session runs is settled here rather than at the first prompt, so that a working
+    // directory this host will not run a session in is refused while there is still a `session/new`
+    // to refuse, and with the reason in the answer.
+    try {
+      const placement = await session.placement();
+      if (!placement.boxed) {
+        writeLog({ level: "info", message: "Opening a session on this host rather than in a box", sessionId: session.id, cwd: session.cwd, reason: placement.reason });
+      }
+    } catch (error) {
+      await this.sessions.delete(session.id);
+      throw error;
+    }
     this.workspaces?.watch(session.id, session.cwd);
     // The client first learns this session id from the response below, so an update sent any earlier has nowhere to land.
     setImmediate(() => void this.publishCommands(session));

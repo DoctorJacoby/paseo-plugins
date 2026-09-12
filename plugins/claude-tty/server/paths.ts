@@ -80,18 +80,24 @@ export function claudeConfigDirectory(env: Env = process.env): string {
   return configured || path.join(env.HOME || os.homedir(), ".claude");
 }
 
-/** Claude names a project directory after its working directory, with everything else punched out. */
-export function projectDirectory(cwd: string, env: Env = process.env): string {
-  return path.join(claudeConfigDirectory(env), "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+/**
+ * Claude names a project directory after its working directory, with everything else punched out.
+ *
+ * `configDir` is the session's own where it has one: a session running in its checkout's box writes
+ * into the box's `~/.claude` and not this account's. The working directory is the same path on both
+ * sides of that mount, so the root is the only part of this that moves.
+ */
+export function projectDirectory(cwd: string, env: Env = process.env, configDir = claudeConfigDirectory(env)): string {
+  return path.join(configDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
 }
 
-export function transcriptPath(cwd: string, claudeSessionId: string, env: Env = process.env): string {
-  return path.join(projectDirectory(cwd, env), `${claudeSessionId}.jsonl`);
+export function transcriptPath(cwd: string, claudeSessionId: string, env: Env = process.env, configDir = claudeConfigDirectory(env)): string {
+  return path.join(projectDirectory(cwd, env, configDir), `${claudeSessionId}.jsonl`);
 }
 
 /** Every subagent a session runs has its own transcript here, and nowhere in the session's own. */
-export function subagentsDirectory(cwd: string, claudeSessionId: string, env: Env = process.env): string {
-  return path.join(projectDirectory(cwd, env), claudeSessionId, "subagents");
+export function subagentsDirectory(cwd: string, claudeSessionId: string, env: Env = process.env, configDir = claudeConfigDirectory(env)): string {
+  return path.join(projectDirectory(cwd, env, configDir), claudeSessionId, "subagents");
 }
 
 /** `plugins/claude-tty` sits two levels below the checkout whose adapter this plugin manages. */
