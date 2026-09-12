@@ -6,6 +6,7 @@ import React, { useCallback } from "react";
 import { ScrollView, Text, View } from "react-native";
 import * as contracts from "../shared/contracts.ts";
 import { PROVIDER_LABEL } from "../shared/provider.ts";
+import { BoxProjectSection } from "./box-project.tsx";
 import { DoctorSection } from "./doctor.tsx";
 import { SessionsSection } from "./sessions.tsx";
 import { RemoveStateSection } from "./uninstall.tsx";
@@ -81,6 +82,8 @@ export function ClaudeTtySurface({ theme, layout, navigation }: PluginSurfacePro
       <DoctorSection palette={palette} />
 
       <SessionsSection palette={palette} navigation={navigation} />
+
+      <BoxProjectSection palette={palette} />
 
       <SettingsSection title="This host">
         <SettingsCard>

@@ -4,6 +4,8 @@ import { settingsDocument } from "./shared/settings.ts";
 import { claudeTtyProvider } from "./server/provider.ts";
 import { carryOverIdleTimeout } from "./server/upgrade.ts";
 import {
+  boxProjectCheckHandler,
+  boxProjectListHandler,
   doctorHandler,
   lastDoctorHandler,
   quarantineSessionHandler,
@@ -36,6 +38,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(contracts.stopSession, (input, { paseo }) => stopSessionHandler(paseo, input));
   server.handle(contracts.releaseStaleLocks, (_input, { paseo }) => releaseStaleLocksHandler(paseo));
   server.handle(contracts.removeState, () => removeStateHandler());
+  server.handle(contracts.listBoxProjects, () => boxProjectListHandler());
+  server.handle(contracts.checkBoxProject, (input) => boxProjectCheckHandler(input));
 
   return () => {};
 }
