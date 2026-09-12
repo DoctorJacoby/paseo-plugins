@@ -1998,6 +1998,76 @@ test("goes on waiting for an agent inside its bound after giving up on the comma
   }
 });
 
+test("takes a message during a turn held for a background agent without interrupting Claude", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-chat-during-agent-test-"));
+  const configDirectory = path.join(root, "claude");
+  const runtimeRoot = path.join(root, "runtime");
+  const cwd = "/work/agents-chat";
+  const projectDirectory = path.join(configDirectory, "projects", escapeProjectDirName(cwd));
+  await mkdir(projectDirectory, { recursive: true });
+  await mkdir(runtimeRoot, { recursive: true });
+  let agent!: ClaudeTtyAgent;
+  let spawned: FakePty | null = null;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    spawned = new FakePty(3750);
+    const sessionId = args[args.indexOf("--session-id") + 1]!;
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return spawned;
+  };
+  agent = new ClaudeTtyAgent(createConnection([]), {
+    spawnPty,
+    runtimeRoot,
+    claudeConfigDir: configDirectory,
+    stateDirectory: path.join(root, "state"),
+    startupTimeoutMs: 500,
+    readinessTimeoutMs: 0,
+    submitDelayMs: 0,
+    contextRefreshTimeoutMs: 0,
+    transcriptPollIntervalMs: 10,
+  });
+
+  try {
+    const session = await agent.newSession({ cwd, mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "launch an agent" }] });
+    await waitFor(() => spawned !== null && spawned.writes.length === 2);
+    await writeFile(
+      path.join(projectDirectory, `${session.sessionId}.jsonl`),
+      `${[
+        JSON.stringify({
+          type: "assistant",
+          uuid: "launcher",
+          message: { content: [{ type: "tool_use", id: "agent-tool", name: "Agent", input: { description: "Count the files" } }] },
+        }),
+        JSON.stringify({
+          type: "user",
+          uuid: "launched",
+          toolUseResult: { isAsync: true, status: "async_launched", agentId: "a1" },
+          message: { content: [{ type: "tool_result", tool_use_id: "agent-tool", content: [] }] },
+        }),
+      ].join("\n")}\n`,
+    );
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "LAUNCHED" });
+
+    // Claude is back at its prompt and the turn is only being held so the agent's report has somewhere to
+    // land, which is how every message sent while a subagent runs arrives: Paseo cancels, then re-prompts.
+    await agent.cancel({ sessionId: session.sessionId });
+    assert.deepEqual(await turn, { stopReason: "cancelled" });
+    const keys = (spawned as unknown as FakePty).keystrokes;
+    assert.ok(!keys.includes("\u001b"), `a held turn was cancelled with an Escape: ${JSON.stringify(keys)}`);
+
+    // And the message that replaces it goes in as an ordinary prompt, with the agent still waited on.
+    const second = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "what do you think?" }] });
+    await waitFor(() => (spawned as unknown as FakePty).writes.length === 4);
+    assert.equal((spawned as unknown as FakePty).writes[2], "\u001b[200~what do you think? \u001b[201~");
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "ANSWERED" });
+    await agent.cancel({ sessionId: session.sessionId });
+    assert.deepEqual(await second, { stopReason: "cancelled" }, "the second turn is held for the same agent, which is still running");
+  } finally {
+    await agent.close();
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("a turn waiting on a background agent still cancels at once", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-subagent-cancel-test-"));
   const configDirectory = path.join(root, "claude");
