@@ -116,7 +116,12 @@ export class ClaudeTtyAgent implements Agent {
     const session = await this.sessions.load(params.sessionId, params.cwd);
     await session.refreshAutoAccept({ publish: false });
     this.workspaces?.watch(session.id, session.cwd);
-    await session.emitCommands();
+    // The client first learns this session id from the response below, so the conversation and the
+    // command list go after it, for the same reason `newSession` publishes its commands after its
+    // own: an update sent earlier has nowhere to land. Replayed ahead of the response, the whole
+    // history of a resumed session is what that costs -- the conversation survives on disk and in
+    // Claude, and the client shows an empty timeline.
+    setImmediate(() => void this.restoreSession(session));
     writeLog({ level: "info", message: "Loaded persisted ACP session", sessionId: params.sessionId, cwd: params.cwd });
     return { models: session.models, modes: session.modes, configOptions: session.configOptions };
   }
@@ -161,6 +166,21 @@ export class ClaudeTtyAgent implements Agent {
     this.workspaces?.stop();
     await this.sessions.clear();
     await this.hooks.close();
+  }
+
+  /**
+   * Puts a resumed session's conversation back in front of the client, then its commands.
+   * History first, because the command list is what the client reads as the session being ready to
+   * use. A replay that fails costs the timeline, not the session: Claude still holds the
+   * conversation, so the session is left open to carry on rather than failed for its history.
+   */
+  private async restoreSession(session: ClaudeSession): Promise<void> {
+    try {
+      await session.replayHistory();
+    } catch (error) {
+      writeLog({ level: "warn", message: "Failed to replay a loaded session's history", sessionId: session.id, error: errorMessage(error) });
+    }
+    await this.publishCommands(session);
   }
 
   /** What a refused session offers: nothing, said out loud, so that nobody waits for a list that is never coming. */

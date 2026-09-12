@@ -63,6 +63,8 @@ For a systemd service, set `CLAUDE_BIN` to the output of `command -v claude` in 
 Paseo session IDs stay stable even though Claude's own session ID can rotate after `/clear`.
 The mapping is persisted only after the first real prompt, so provider probes leave no saved sessions behind.
 Loading a session replays its transcript and launches `claude --resume` lazily on the next prompt.
+The replay goes out *after* `session/load` has answered, never before: until that answer the client has no session to put an update on, and everything sent ahead of it is dropped -- which is a resumed session coming up with an empty timeline while Claude still holds the whole conversation.
+A replay that fails costs the timeline rather than the session, which is left open to carry on.
 
 Each active session owns an isolated PTY, hook route, transcript reader, permission bridge, lock, and attachment directory.
 Sessions run concurrently, work inside a single session stays serialized, and a second adapter process cannot open a session that is already active on the host.
