@@ -58,9 +58,10 @@ const BOX_CLAUDE = "claude";
 /**
  * Where a session with this working directory runs, asked of the host and obeyed.
  *
- * The decision is the host's alone: `toolchain-box session` reads it from the projects file and the
- * allowlist in dotfiles, never from the working tree, because a box can write its own tree and
- * would otherwise be able to talk its way onto the host. Nothing here second-guesses that answer.
+ * The decision is the host's alone: `toolchain-box session` reads it from its own configuration,
+ * never from the working tree, because a box can write its own tree and would otherwise be able to
+ * talk its way onto the host. Nothing here second-guesses that answer, and a refusal is reported in
+ * the host's words rather than reworded here.
  *
  * Throws when the host refuses, which is what an unboxed project with no host workspace gets.
  */
@@ -79,19 +80,28 @@ export async function resolvePlacement(cwd: string, env: NodeJS.ProcessEnv = pro
     case "host":
       return hostPlacement(cwd, answer.reason ?? "the host allows a session here");
     case "refuse":
-      throw new SessionRefused(refusal(cwd, answer.reason ?? ""));
+      throw new SessionRefused(refusal(cwd, answer.reason ?? "", answer.guidance ?? ""));
     default:
       throw new Error(`${command} session ${cwd} answered '${answer.placement ?? ""}', which is not a placement this adapter knows`);
   }
 }
 
-function refusal(cwd: string, reason: string): string {
+/**
+ * What whoever spawned is told. The first sentence and the last are this adapter's, because the
+ * risk and the flag are its own; the two in between are the host's words — its `reason` for this
+ * directory, and its `guidance` for putting the directory right. How a project is given a box, and
+ * where that policy is written down, differ from one host to the next, so only the host can name
+ * them; a host that names nothing gets the shape of the answer rather than an invented path.
+ */
+function refusal(cwd: string, reason: string, guidance: string): string {
   return [
     `${cwd} has no session box, so running an agent there would run it on this host, with this account's keys in reach.`,
     reason,
-    "The paved road is to box the project: add its main checkout to toolchain-box/projects in dotfiles and give it a paseo/toolchain-box.conf (kobe-work/work-organisation#56 is the onboarding).",
-    `To keep a workspace on the host on purpose, list it in toolchain-box/sessions beside that file; to take the host for one agent, spawn it with ${HOST_SESSION_VARIABLE}=1.`,
-  ].join(" ");
+    guidance || "Give the project a session box, or tell the placement tool that this workspace may run on the host; both are its own configuration rather than this adapter's.",
+    `To take the host for one agent, spawn it with ${HOST_SESSION_VARIABLE}=1.`,
+  ]
+    .filter((sentence) => sentence !== "")
+    .join(" ");
 }
 
 async function ask(command: string, cwd: string): Promise<Record<string, string>> {

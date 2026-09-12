@@ -11,7 +11,7 @@ import { HOST_SESSION_VARIABLE, resolvePlacement } from "./session-placement.ts"
 
 /**
  * A stand-in for the host's toolchain-box, answering `session` from a script the test writes and
- * recording every call. The real one is dotfiles' `hosts/vps/bin/toolchain-box`; what matters here
+ * recording every call. The real one is the host's own, and its wording with it; what matters here
  * is that the adapter asks it and obeys, which is the whole of the contract between them.
  */
 async function fakeToolchainBox(directory: string, answer: string): Promise<{ command: string; calls: () => Promise<string[]> }> {
@@ -58,15 +58,35 @@ test("runs on the host where the host says a workspace may, and says which one",
   }
 });
 
-test("refuses a session the host will neither box nor allow, and names the paved road", async () => {
+test("refuses a session the host will neither box nor allow, and names the host's own paved road", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "placement-refused-"));
   try {
-    const box = await fakeToolchainBox(directory, "enabled 1\nplacement refuse\nreason /work/new is in no checkout with a session box");
+    const box = await fakeToolchainBox(
+      directory,
+      "enabled 1\nplacement refuse\nreason /work/new is in no checkout with a session box\nguidance The paved road is to list its checkout in /etc/boxes/projects.",
+    );
     await assert.rejects(resolvePlacement("/work/new", { TOOLCHAIN_BOX_BIN: box.command }), (error: Error) => {
       assert.match(error.message, /\/work\/new is in no checkout with a session box/);
-      assert.match(error.message, /toolchain-box\/projects/);
-      assert.match(error.message, /work-organisation#56/);
+      // Whatever this host calls its paved road, rather than one this adapter invented for it.
+      assert.match(error.message, /list its checkout in \/etc\/boxes\/projects/);
       assert.match(error.message, new RegExp(`${HOST_SESSION_VARIABLE}=1`));
+      return true;
+    });
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("refuses in its own words where the host offers none, naming no path it cannot know", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "placement-refused-bare-"));
+  try {
+    const box = await fakeToolchainBox(directory, "enabled 1\nplacement refuse");
+    await assert.rejects(resolvePlacement("/work/new", { TOOLCHAIN_BOX_BIN: box.command }), (error: Error) => {
+      assert.match(error.message, /\/work\/new has no session box/);
+      assert.match(error.message, /placement tool/);
+      assert.match(error.message, new RegExp(`${HOST_SESSION_VARIABLE}=1`));
+      // A fact the host left out leaves a sentence out, not a double space in.
+      assert.doesNotMatch(error.message, / {2}/);
       return true;
     });
   } finally {
@@ -78,7 +98,10 @@ test("refuses a session's first turn rather than its open, and says so in the tu
   const directory = await mkdtemp(path.join(os.tmpdir(), "placement-refused-acp-"));
   const updates: SessionNotification[] = [];
   try {
-    const box = await fakeToolchainBox(directory, "enabled 1\nplacement refuse\nreason /work/new is in no checkout with a session box");
+    const box = await fakeToolchainBox(
+      directory,
+      "enabled 1\nplacement refuse\nreason /work/new is in no checkout with a session box\nguidance The paved road is to list its checkout in /etc/boxes/projects.",
+    );
     const spawned: unknown[] = [];
     const agent = new ClaudeTtyAgent(
       { sessionUpdate: async (update: SessionNotification) => void updates.push(update), extNotification: async () => undefined } as unknown as AgentSideConnection,
@@ -103,7 +126,7 @@ test("refuses a session's first turn rather than its open, and says so in the tu
     await assert.rejects(agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }] }), (error: Error & { code?: number }) => {
       assert.equal(error.code, ClaudeTtyAgent.REFUSED_CODE);
       assert.match(error.message, /has no session box/);
-      assert.match(error.message, /toolchain-box\/projects/);
+      assert.match(error.message, /list its checkout in \/etc\/boxes\/projects/);
       return true;
     });
     assert.deepEqual(spawned, []);
