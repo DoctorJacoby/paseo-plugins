@@ -37,7 +37,6 @@ const IGNORED_RECORD_TYPES = new Set([
   "mode",
   "permission-mode",
   "pr-link",
-  "queue-operation",
   "relocated",
   "summary",
   "worktree-state",
@@ -243,6 +242,9 @@ export class TranscriptTranslator {
       case "attachment":
         await this.translateAttachment(record);
         return;
+      case "queue-operation":
+        await this.translateQueueOperation(record);
+        return;
       default:
         if (type && !IGNORED_RECORD_TYPES.has(type)) this.reportUnknown(type);
     }
@@ -405,6 +407,23 @@ export class TranscriptTranslator {
     for (const text of contentTexts(content)) {
       for (const notification of parseTaskNotifications(text)) await this.applyNotification(notification);
     }
+  }
+
+  /**
+   * A task notification Claude queued while it was working, written as a record of the queue's own.
+   *
+   * For a command a *subagent* backgrounded this is the only record of the report there is: it never
+   * reaches a user turn, and the `queued_command` attachment beside it carries what was queued as a
+   * prompt rather than this. A wait left on one of those never ends, and the session reads as busy for
+   * the rest of its life.
+   *
+   * Only the notifications are taken; the rest of what the queue writes is Claude's own bookkeeping.
+   * The same notification is written on the way in, on the way out, and again at every turn boundary
+   * the queue survives, which costs nothing: a card is closed only while it is open, and ending a wait
+   * that has already ended changes nothing.
+   */
+  private async translateQueueOperation(record: TranscriptRecord): Promise<void> {
+    await this.translateNotifications(record.content);
   }
 
   /**
