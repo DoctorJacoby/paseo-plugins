@@ -2153,16 +2153,21 @@ test("goes on holding the turn for a command the agent backgrounded, after the a
     assert.equal(settled, false, "the session read as done while a command its agent backgrounded was still running");
 
     // It ends when that command reports, at the Stop of the turn that answered for it.
+    // Only as a queue record: a command a subagent backgrounded is never reported in a user turn, and the
+    // `queued_command` attachment beside it carries what was queued as a prompt rather than this.
     records.push(
       JSON.stringify({
-        type: "user",
+        type: "queue-operation",
+        operation: "enqueue",
         uuid: "shell-done",
-        message: { content: "<task-notification> <task-id>b9</task-id> <status>completed</status> <summary>Background command completed (exit code 0)</summary> </task-notification>" },
+        content: "<task-notification> <task-id>b9</task-id> <status>completed</status> <summary>Background command completed (exit code 0)</summary> </task-notification>",
       }),
     );
     await writeFile(transcript, `${records.join("\n")}\n`);
     await new Promise((resolve) => setTimeout(resolve, 200));
     await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "It counted to sixty." });
+    // Bounded, so a wait that never ends fails here rather than hanging the run.
+    await waitFor(() => settled, 2_000);
     assert.deepEqual(await second, { stopReason: "end_turn" });
   } finally {
     await agent.close();
@@ -2273,6 +2278,7 @@ test("puts an agent back to work when Claude sends it another message", async ()
     await writeFile(transcript, `${records.join("\n")}\n`);
     await new Promise((resolve) => setTimeout(resolve, 200));
     await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "It got to twenty-seven." });
+    await waitFor(() => settled, 2_000);
     assert.deepEqual(await second, { stopReason: "end_turn" });
   } finally {
     await agent.close();
