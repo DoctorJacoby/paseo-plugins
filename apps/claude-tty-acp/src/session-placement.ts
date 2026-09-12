@@ -37,6 +37,15 @@ export type Placement = {
  */
 export const HOST_SESSION_VARIABLE = "CLAUDE_TTY_HOST_SESSION";
 
+/**
+ * The host will run no session in this working directory. Its own class because the answer is a
+ * decision rather than a fault: nothing retries it, and it is reported to whoever spawned in the
+ * host's words, where any other failure here is this adapter's own problem.
+ */
+export class SessionRefused extends Error {
+  override readonly name = "SessionRefused";
+}
+
 /** The host's answer is a few file reads and a walk of one repository's worktrees. */
 const PLACEMENT_TIMEOUT_MS = 30_000;
 /** Starting a box builds its image the first time a project is boxed, which is minutes rather than seconds. */
@@ -70,7 +79,7 @@ export async function resolvePlacement(cwd: string, env: NodeJS.ProcessEnv = pro
     case "host":
       return hostPlacement(cwd, answer.reason ?? "the host allows a session here");
     case "refuse":
-      throw new Error(refusal(cwd, answer.reason ?? ""));
+      throw new SessionRefused(refusal(cwd, answer.reason ?? ""));
     default:
       throw new Error(`${command} session ${cwd} answered '${answer.placement ?? ""}', which is not a placement this adapter knows`);
   }
