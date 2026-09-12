@@ -74,6 +74,44 @@ test("refuses a session the host will neither box nor allow, and names the paved
   }
 });
 
+test("refuses a session's first turn rather than its open, and says so in the turn's own error", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "placement-refused-acp-"));
+  const updates: SessionNotification[] = [];
+  try {
+    const box = await fakeToolchainBox(directory, "enabled 1\nplacement refuse\nreason /work/new is in no checkout with a session box");
+    const spawned: unknown[] = [];
+    const agent = new ClaudeTtyAgent(
+      { sessionUpdate: async (update: SessionNotification) => void updates.push(update), extNotification: async () => undefined } as unknown as AgentSideConnection,
+      {
+        spawnPty: (...args: unknown[]) => {
+          spawned.push(args);
+          throw new Error("a refused session must never reach a pty");
+        },
+        resolvePlacement: (cwd: string) => resolvePlacement(cwd, { TOOLCHAIN_BOX_BIN: box.command }),
+        stateDirectory: path.join(directory, "state"),
+      } as unknown as ConstructorParameters<typeof ClaudeTtyAgent>[1],
+    );
+
+    // The open itself has to succeed: the daemon builds this provider's catalogue from the first
+    // session on a connection and remembers a rejected open against the provider, which would
+    // refuse every later spawn in every workspace.
+    const session = await agent.newSession({ cwd: "/work/new", mcpServers: [] });
+    await waitFor(() => updates.some((update) => update.update.sessionUpdate === "available_commands_update"));
+
+    // Anything but a RequestError reaches the daemon as "Internal error" with the reason in data
+    // that nothing reads, which is a refusal nobody can act on.
+    await assert.rejects(agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }] }), (error: Error & { code?: number }) => {
+      assert.equal(error.code, ClaudeTtyAgent.REFUSED_CODE);
+      assert.match(error.message, /has no session box/);
+      assert.match(error.message, /toolchain-box\/projects/);
+      return true;
+    });
+    assert.deepEqual(spawned, []);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
 test("moves only what lies inside the box's agent home between the two sides of the mount", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "placement-paths-"));
   try {
