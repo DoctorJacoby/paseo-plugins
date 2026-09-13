@@ -2,8 +2,8 @@ import { stat } from "node:fs/promises";
 import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
 import { PROVIDER_ID, PROVIDER_LABEL } from "../shared/provider.ts";
-import { resolveRepoRoot } from "./checkout.ts";
-import { adapterCommand, adapterEntryPath, cardAnswersDirectory, defaultStateDirectory } from "./paths.ts";
+import { resolveAdapter } from "./adapter.ts";
+import { adapterCommand, cardAnswersDirectory, defaultStateDirectory } from "./paths.ts";
 import { withPermissionCards } from "./permission-bridge.ts";
 import { withSteerFallback } from "./steering.ts";
 import { subagentSource } from "./subagents.ts";
@@ -22,18 +22,6 @@ const INITIAL_COMMANDS_TIMEOUT_MS = 10_000;
 /** Read from the plugin directory and sanitised by the daemon when the plugin starts. */
 const PROVIDER_ICON = "icon.svg";
 
-/**
- * Resolved once. The checkout is read out of `plugins.claude-tty.path` in the daemon configuration,
- * which is the path the daemon loaded *this* plugin process from and cannot change under it: moving
- * a plugin is a configuration change, and the daemon starts a new process for the plugin it reloads.
- */
-let checkoutRoot: string | null = null;
-
-async function resolveCheckoutRoot(): Promise<string | null> {
-  if (checkoutRoot === null) checkoutRoot = (await resolveRepoRoot()).root;
-  return checkoutRoot;
-}
-
 export function claudeTtyProvider(): ProviderRegistration {
   return {
     id: PROVIDER_ID,
@@ -50,34 +38,37 @@ export function claudeTtyProvider(): ProviderRegistration {
      * life. Nothing else invalidates it: the daemon refetches on an explicit refresh and marks
      * catalogues stale when the settings snapshot is refreshed, and otherwise holds what it has.
      *
-     * This is its own IPC call on essentially every snapshot read, so it is one `stat` and no more.
+     * This is its own IPC call on essentially every snapshot read, so it stays at the settings
+     * document and one `stat`: the document is read rather than cached because the executable it can
+     * name is a setting, which — unlike the checkout — changes under a running plugin.
      */
     async getCatalogCacheKey() {
-      const root = await resolveCheckoutRoot();
-      if (root === null) return `${PROVIDER_ID}:unresolved`;
-      const entry = adapterEntryPath(root);
+      const adapter = await resolveAdapter();
+      if (adapter.buildWitness === null) return `${PROVIDER_ID}:unresolved`;
       try {
-        const built = await stat(entry);
-        return `${entry}:${built.mtimeMs}:${built.size}`;
+        const built = await stat(adapter.buildWitness);
+        return `${adapter.buildWitness}:${built.mtimeMs}:${built.size}`;
       } catch {
         // One shared key rather than none, so an adapter that is not built yet fails discovery once
         // instead of once per workspace; the build that fixes it changes the key and refreshes all.
-        return `${entry}:unbuilt`;
+        return `${adapter.buildWitness}:unbuilt`;
       }
     },
     /**
-     * The command names the adapter inside the checkout this plugin was installed from, and the
-     * settings document the host keeps for this plugin, neither of which is knowable before the
-     * plugin runs, so the ACP shim is built per connection rather than at registration.
+     * The command names the adapter this host runs — the one its settings point at, or the one in the
+     * checkout this plugin was installed from — and the settings document the host keeps, neither of
+     * which is knowable before the plugin runs, so the ACP shim is built per connection rather than
+     * at registration. That also makes a changed setting reach the next connection rather than only
+     * the next daemon start.
      */
     async connect(request) {
-      const repo = await resolveRepoRoot();
-      if (repo.root === null) throw new Error(repo.problem);
+      const adapter = await resolveAdapter();
+      if (adapter.executable === null) throw new Error(adapter.problem!);
       const details = toolCallDetails();
       const connection = await runAcpProvider({
         id: PROVIDER_ID,
         label: PROVIDER_LABEL,
-        command: adapterCommand(repo.root),
+        command: adapterCommand(adapter.executable),
         acpOptions: { waitForInitialCommands: true, initialCommandsTimeoutMs: INITIAL_COMMANDS_TIMEOUT_MS },
         transformers: [details.transformer],
       }).connect(request);

@@ -3,6 +3,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   adapterBinaryPath,
+  adapterBuildWitness,
   adapterCommand,
   adapterEntryPath,
   adapterManifestPath,
@@ -48,13 +49,22 @@ test("finds the settings file an older install kept in the cache directory", () 
 });
 
 test("spawns the adapter with the two paths it cannot work out for itself", () => {
-  assert.deepEqual(adapterCommand("/opt/paseo-plugins", { PASEO_HOME: "/srv/paseo", HOME: "/home/paseo" }), [
+  const executable = adapterBinaryPath("/opt/paseo-plugins");
+  assert.deepEqual(adapterCommand(executable, { PASEO_HOME: "/srv/paseo", HOME: "/home/paseo" }), [
     "/opt/paseo-plugins/apps/claude-tty-acp/bin/claude-tty-acp",
     "--settings-file",
     "/srv/paseo/plugin-settings/claude-tty/settings.json",
     "--answers-dir",
     "/home/paseo/.local/state/claude-tty-acp/card-answers",
   ]);
+});
+
+test("reads a wrapper's build off the dist beside it, and anything else off itself", () => {
+  // The wrapper in a checkout is committed and never moves, so the two have to agree about which
+  // file "built" and "rebuilt" mean; anywhere else there is nothing but the executable to go on.
+  assert.equal(adapterBuildWitness(adapterBinaryPath("/opt/paseo-plugins")), adapterEntryPath("/opt/paseo-plugins"));
+  assert.equal(adapterBuildWitness("/opt/built/claude-tty-acp"), "/opt/built/claude-tty-acp");
+  assert.equal(adapterBuildWitness("/opt/built/libexec/claude-tty-acp"), "/opt/built/libexec/claude-tty-acp");
 });
 
 test("strips a trailing separator from the installed plugin path", () => {
