@@ -60,6 +60,13 @@ export class StateStore {
     validateSessionId(sessionId);
     return path.join(this.sessionsDirectory, `${sessionId}.json`);
   }
+
+  /** Removing a session that is already gone is the outcome this was asking for. */
+  async remove(sessionId: string): Promise<void> {
+    await unlink(this.sessionPath(sessionId)).catch((error) => {
+      if (!isMissing(error)) throw error;
+    });
+  }
 }
 
 export function defaultStateDirectory(env: NodeJS.ProcessEnv = process.env): string {
@@ -67,6 +74,30 @@ export function defaultStateDirectory(env: NodeJS.ProcessEnv = process.env): str
   if (configured) return configured;
   const stateHome = env.XDG_STATE_HOME?.trim() || path.join(env.HOME || os.homedir(), ".local", "state");
   return path.join(stateHome, APP_NAME);
+}
+
+/**
+ * How session state is keyed under the root. `shared` is the historical layout: one `sessions/` and
+ * `locks/` for every workspace this host runs. `workspace` keys them by the session's working
+ * directory instead, for deployments where adapters run in containers or on separate hosts and each
+ * should see only its own workspace's state rather than one mutable directory shared across all.
+ */
+export type StateScope = "shared" | "workspace";
+
+export function stateScope(env: NodeJS.ProcessEnv = process.env): StateScope {
+  const configured = env.CLAUDE_TTY_ACP_STATE_SCOPE?.trim();
+  if (!configured || configured === "shared") return "shared";
+  if (configured === "workspace") return "workspace";
+  // A value that is neither must not quietly fall back to sharing what it asked to partition.
+  throw new Error(`CLAUDE_TTY_ACP_STATE_SCOPE must be "shared" or "workspace", not "${configured}"`);
+}
+
+/**
+ * A workspace's slice of the state root. The escape is Claude's own convention for naming a project
+ * directory after its working directory, so the two layouts read the same way side by side.
+ */
+export function workspaceStateDirectory(root: string, cwd: string): string {
+  return path.join(root, "workspaces", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
 }
 
 function isPersistedSession(value: unknown): value is PersistedSession {

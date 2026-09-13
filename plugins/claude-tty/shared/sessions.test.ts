@@ -34,7 +34,7 @@ function lock(id: string, pid: number): StateFile {
 }
 
 test("joins a session to its lock and reads the process liveness", () => {
-  const [entry] = joinSessions([session("a", 5)], [lock("a", ALIVE)], isAlive);
+  const [entry] = joinSessions("/state", [session("a", 5)], [lock("a", ALIVE)], isAlive);
   assert.equal(entry?.claudeSessionId, "claude-a");
   assert.equal(entry?.cwd, "/srv/project");
   assert.equal(entry?.model, "opus");
@@ -43,27 +43,34 @@ test("joins a session to its lock and reads the process liveness", () => {
 });
 
 test("marks a lock whose process is gone as stale", () => {
-  const [entry] = joinSessions([session("a", 5)], [lock("a", DEAD)], isAlive);
+  const [entry] = joinSessions("/state", [session("a", 5)], [lock("a", DEAD)], isAlive);
   assert.equal(entry?.lock?.live, false);
 });
 
 test("leaves a session without a lock unlocked", () => {
-  const [entry] = joinSessions([session("a", 5)], [], isAlive);
+  const [entry] = joinSessions("/state", [session("a", 5)], [], isAlive);
   assert.equal(entry?.lock, null);
   assert.equal(entry?.corrupt, false);
 });
 
 test("lists a session file it cannot read as corrupt", () => {
-  const unreadable = joinSessions([{ name: "a.json", contents: null }], [], isAlive);
+  const unreadable = joinSessions("/state", [{ name: "a.json", contents: null }], [], isAlive);
   assert.equal(unreadable[0]?.corrupt, true);
-  const truncated = joinSessions([{ name: "a.json", contents: '{"acpSessionId":"a"' }], [], isAlive);
+  const truncated = joinSessions("/state", [{ name: "a.json", contents: '{"acpSessionId":"a"' }], [], isAlive);
   assert.equal(truncated[0]?.corrupt, true);
-  const incomplete = joinSessions([{ name: "a.json", contents: '{"acpSessionId":"a"}' }], [], isAlive);
+  const incomplete = joinSessions("/state", [{ name: "a.json", contents: '{"acpSessionId":"a"}' }], [], isAlive);
   assert.equal(incomplete[0]?.corrupt, true);
 });
 
+test("stamps every entry with the directory it was read from", () => {
+  const [held] = joinSessions("/state/workspaces/-srv-project", [session("a", 5)], [], isAlive);
+  assert.equal(held?.stateDirectory, "/state/workspaces/-srv-project");
+  const [orphan] = joinSessions("/state", [], [lock("gone", DEAD)], isAlive);
+  assert.equal(orphan?.stateDirectory, "/state");
+});
+
 test("lists a lock with no session beside it", () => {
-  const entries = joinSessions([], [lock("gone", DEAD)], isAlive);
+  const entries = joinSessions("/state", [], [lock("gone", DEAD)], isAlive);
   assert.equal(entries.length, 1);
   assert.equal(entries[0]?.id, "gone");
   assert.equal(entries[0]?.orphanLock, true);
@@ -71,17 +78,18 @@ test("lists a lock with no session beside it", () => {
 });
 
 test("treats an unreadable lock as stale rather than as a held session", () => {
-  const [entry] = joinSessions([session("a", 5)], [{ name: "a.lock", contents: "junk" }], isAlive);
+  const [entry] = joinSessions("/state", [session("a", 5)], [{ name: "a.lock", contents: "junk" }], isAlive);
   assert.equal(entry?.lock?.live, false);
   assert.equal(entry?.lock?.pid, -1);
 });
 
 test("ignores files that are not sessions or locks", () => {
-  assert.deepEqual(joinSessions([{ name: ".tmp", contents: "{}" }], [{ name: "notes.txt", contents: "" }], isAlive), []);
+  assert.deepEqual(joinSessions("/state", [{ name: ".tmp", contents: "{}" }], [{ name: "notes.txt", contents: "" }], isAlive), []);
 });
 
 test("puts live sessions first and orders the rest by last activity", () => {
   const entries = joinSessions(
+    "/state",
     [session("old", 1), session("recent", 9), session("held", 2)],
     [lock("held", ALIVE)],
     isAlive,
@@ -101,7 +109,7 @@ test("refuses a name that would leave the state directory", () => {
 });
 
 test("names a session after the Paseo agent holding it", () => {
-  const entries = joinSessions([session("a", 5)], [], isAlive);
+  const entries = joinSessions("/state", [session("a", 5)], [], isAlive);
   const [entry] = attachAgents(entries, [
     { agent: { id: "agent-a", title: "Fix the pipeline", runtimeInfo: { sessionId: "a" } } },
   ]);
@@ -109,13 +117,13 @@ test("names a session after the Paseo agent holding it", () => {
 });
 
 test("tolerates an agent handed over without the daemon's wrapper", () => {
-  const entries = joinSessions([session("a", 5)], [], isAlive);
+  const entries = joinSessions("/state", [session("a", 5)], [], isAlive);
   const [entry] = attachAgents(entries, [{ id: "agent-a", title: null, persistence: { sessionId: "a" } }]);
   assert.deepEqual(entry?.agent, { id: "agent-a", title: null });
 });
 
 test("leaves a session Paseo no longer lists an agent for alone", () => {
-  const entries = joinSessions([session("a", 5)], [], isAlive);
+  const entries = joinSessions("/state", [session("a", 5)], [], isAlive);
   assert.equal(attachAgents(entries, [])[0]?.agent, null);
   assert.equal(attachAgents(entries, [{ agent: { id: "agent-b", runtimeInfo: { sessionId: "b" } } }])[0]?.agent, null);
   assert.equal(attachAgents(entries, [null, 7, { agent: {} }])[0]?.agent, null);
@@ -143,6 +151,7 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 function entry(id: string, overrides: Partial<SessionEntry> = {}): SessionEntry {
   return {
     id,
+    stateDirectory: "/state",
     claudeSessionId: `claude-${id}`,
     cwd: "/srv/project",
     model: "opus",

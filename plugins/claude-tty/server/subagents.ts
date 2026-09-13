@@ -1,5 +1,5 @@
-import { defaultStateDirectory, subagentsDirectory } from "./paths.ts";
-import { readSessionEntry } from "./sessions.ts";
+import { subagentsDirectory } from "./paths.ts";
+import { findSessionEntry } from "./sessions.ts";
 import { isSafeStateFileStem } from "../shared/sessions.ts";
 import { readSidecars, SubagentTranscript } from "./subagent-transcripts.ts";
 import type { SubagentSource } from "./subsessions.ts";
@@ -13,7 +13,7 @@ export function subagentSource(): SubagentSource {
   return {
     async locate(nativeSessionId: string, cwd: string) {
       if (!isSafeStateFileStem(nativeSessionId)) return null;
-      const entry = await readSessionEntry(defaultStateDirectory(), nativeSessionId);
+      const entry = await findSessionEntry(nativeSessionId);
       const claudeSessionId = entry?.claudeSessionId ?? null;
       if (claudeSessionId === null || !isSafeStateFileStem(claudeSessionId)) return null;
       return subagentsDirectory(entry?.cwd ?? cwd, claudeSessionId);

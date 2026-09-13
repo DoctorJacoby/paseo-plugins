@@ -16,7 +16,12 @@ import {
   settingsFilePath,
   subagentsDirectory,
   transcriptPath,
+  workspacesDirectory,
 } from "./paths.ts";
+
+test("names the workspace slices under the state root", () => {
+  assert.equal(workspacesDirectory("/srv/state"), "/srv/state/workspaces");
+});
 
 test("resolves the state directory the way the adapter does", () => {
   assert.equal(defaultStateDirectory({ CLAUDE_TTY_ACP_STATE_DIR: "/srv/state" }), "/srv/state");

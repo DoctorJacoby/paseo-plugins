@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { StateStore, type PersistedSession } from "./state-store.ts";
+import { StateStore, stateScope, workspaceStateDirectory, type PersistedSession } from "./state-store.ts";
 
 const SESSION_ID = "55555555-5555-4555-8555-555555555555";
 
@@ -49,4 +49,17 @@ test("rejects corrupt state and unsafe session IDs", async () => {
   } finally {
     await rm(root, { force: true, recursive: true });
   }
+});
+
+test("reads the state scope from the environment, and refuses one it does not know", () => {
+  assert.equal(stateScope({}), "shared");
+  assert.equal(stateScope({ CLAUDE_TTY_ACP_STATE_SCOPE: "" }), "shared");
+  assert.equal(stateScope({ CLAUDE_TTY_ACP_STATE_SCOPE: "shared" }), "shared");
+  assert.equal(stateScope({ CLAUDE_TTY_ACP_STATE_SCOPE: " workspace " }), "workspace");
+  assert.throws(() => stateScope({ CLAUDE_TTY_ACP_STATE_SCOPE: "boundary" }), /must be "shared" or "workspace"/);
+});
+
+test("names a workspace's slice by Claude's own escape of its working directory", () => {
+  assert.equal(workspaceStateDirectory("/state", "/work/repo"), "/state/workspaces/-work-repo");
+  assert.equal(workspaceStateDirectory("/state", "/work/repo.git wt"), "/state/workspaces/-work-repo-git-wt");
 });
