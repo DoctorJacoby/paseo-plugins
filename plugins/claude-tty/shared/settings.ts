@@ -54,8 +54,25 @@ export const settingsDocument = defineSettings({
     autoAccept: z.boolean().default(false),
     /** Overrides `autoAccept` for sessions in Bypass Permissions mode, unless it inherits. */
     bypassAutoAccept: z.enum(["inherit", "on", "off"]).default("inherit"),
+    /**
+     * An adapter executable to run instead of the one in the checkout this plugin was installed
+     * from. Empty is the default and means that checkout's, which is what an installation from a
+     * clone gets without configuring anything.
+     *
+     * Not validated here beyond being a string: the store would refuse to save a path that does not
+     * exist yet, and a path is typed before the adapter behind it is built as often as after.
+     * Whether it can be run is reported on the panel instead.
+     */
+    adapterExecutable: z.string().default(""),
   }),
 });
+
+/** What the setting amounts to once read: a path someone chose, or nothing at all. */
+export function configuredAdapterExecutable(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed === "" ? null : trimmed;
+}
 
 /** Decimal integers only, matching the adapter: `Number` would also take `0x1c` and `1e3`. */
 export function parseIdleTimeout(raw: unknown): number | null {

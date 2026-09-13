@@ -1,11 +1,12 @@
 import type { PluginSurfaceProps, SettingsState } from "@getpaseo/plugin/client";
 import { useRpc, useSettings } from "@getpaseo/plugin/client";
-import { SettingsAction, SettingsCard, SettingsRow, SettingsSection, SettingsSelect, SettingsSwitch } from "@getpaseo/plugin/client/ui";
+import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSelect, SettingsSwitch } from "@getpaseo/plugin/client/ui";
 import React, { useEffect, useState } from "react";
 import { Text } from "react-native";
 import * as contracts from "../shared/contracts.ts";
 import type { StatusPayload } from "../shared/contracts.ts";
 import { BYPASS_AUTO_ACCEPT_OPTIONS, IDLE_TIMEOUT_ENV, IDLE_TIMEOUT_OPTIONS, settingsDocument } from "../shared/settings.ts";
+import { adapterReading } from "./status.tsx";
 import { fontSize, leading } from "./theme.ts";
 
 type Saved = Extract<SettingsState<typeof settingsDocument.schema>, { status: "ready" }>;
@@ -34,14 +35,58 @@ export function ClaudeTtySettings({ theme }: PluginSurfaceProps) {
   }
   return (
     <>
+      <Adapter theme={theme} settings={settings} />
       <IdleSuspension theme={theme} settings={settings} />
       <PermissionPrompts theme={theme} settings={settings} />
     </>
   );
 }
 
+/**
+ * The one setting that can be wrong in a way the store cannot see: it holds a path, and whether a
+ * path names something runnable is a question about the host rather than about the value. So it is
+ * saved as typed and read back from the status the panel reports, which is the side that looked.
+ */
+function Adapter({ theme, settings }: { theme: PluginSurfaceProps["theme"]; settings: Saved }) {
+  const saved = settings.values.adapterExecutable;
+  const status = useStatus(saved);
+  const reading = status === null ? null : adapterReading(status);
+  // `onChangeText` is every keystroke, and each save is a document the provider reads, so the text
+  // is held here and committed on purpose rather than written a character at a time.
+  const [typed, setTyped] = useState(saved);
+
+  return (
+    <SettingsSection title="Adapter">
+      <SettingsCard>
+        <SettingsInput
+          label="Adapter executable"
+          hint="Leave empty to run the adapter in the checkout this plugin was installed from"
+          error={settings.saveError ?? (reading?.tone === "danger" ? reading.hint : undefined)}
+          initialValue={saved}
+          placeholder="/path/to/paseo-plugins/apps/claude-tty-acp/bin/claude-tty-acp"
+          disabled={settings.saving}
+          onChangeText={setTyped}
+        />
+        <SettingsAction
+          label="Use this adapter"
+          actionLabel={settings.saving ? "Saving…" : "Save"}
+          disabled={settings.saving || typed === saved}
+          onPress={() => void settings.save({ ...settings.values, adapterExecutable: typed }, settings.revision)}
+        />
+        {reading?.tone === "ok" ? <SettingsRow label="Running" hint={reading.hint} /> : null}
+      </SettingsCard>
+      <Note color={theme.colors.foregroundMuted}>
+        The adapter is a native build with no published artefact, so it is built from a clone of the
+        plugin repository — `pnpm install --frozen-lockfile` and `pnpm --filter
+        @paseo-plugins/claude-tty-acp build` — and this is where that build is pointed at. Sessions
+        already open keep the adapter they started on; the next one started uses this.
+      </Note>
+    </SettingsSection>
+  );
+}
+
 function IdleSuspension({ theme, settings }: { theme: PluginSurfaceProps["theme"]; settings: Saved }) {
-  const adapter = useAdapterSettings();
+  const adapter = useStatus()?.settings ?? null;
   const override = adapter?.envOverrideMs ?? null;
   const selected = String(settings.values.idleTimeoutMs);
   const options = OPTIONS.some((option) => option.value === selected)
@@ -107,26 +152,31 @@ function PermissionPrompts({ theme, settings }: { theme: PluginSurfaceProps["the
 }
 
 /**
- * Where the document lives and whether the daemon's environment already pins the timeout — neither is
- * in the document, and both change what this screen means. A read that fails costs the two rows and
- * nothing else, so it is not retried or reported: the panel is where this host is diagnosed.
+ * What this screen cannot see for itself: where the host keeps the document, whether the daemon's
+ * environment already pins the timeout, and what became of the adapter path saved here. A read that
+ * fails costs those readings and nothing else, so it is not retried or reported: the panel is where
+ * this host is diagnosed.
+ *
+ * `after` is whatever has to have been saved before the answer is worth having again — the store
+ * writes its file before it answers a save, and the server reads that file, so a value that has
+ * reached this component has reached the daemon too.
  */
-function useAdapterSettings(): StatusPayload["settings"] | null {
+function useStatus(after?: string): StatusPayload | null {
   const getStatus = useRpc(contracts.getStatus);
-  const [settings, setSettings] = useState<StatusPayload["settings"] | null>(null);
+  const [status, setStatus] = useState<StatusPayload | null>(null);
   useEffect(() => {
     let live = true;
     void getStatus({}).then(
-      (status) => {
-        if (live) setSettings(status.settings);
+      (next) => {
+        if (live) setStatus(next);
       },
       () => undefined,
     );
     return () => {
       live = false;
     };
-  }, [getStatus]);
-  return settings;
+  }, [getStatus, after]);
+  return status;
 }
 
 function Note({ color, children }: { color: string; children: React.ReactNode }) {
