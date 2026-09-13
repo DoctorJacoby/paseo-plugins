@@ -11,6 +11,7 @@ Extensions for [Paseo](https://github.com/getpaseo/paseo), organized in a pnpm w
 | [Discord Rich Presence](plugins/discord-rich-presence) | Show your current Paseo activity on Discord. |
 | [Catppuccin theme](plugins/catppuccin-theme) | Add all four Catppuccin flavours as app themes. |
 | [Claude TTY](plugins/claude-tty) | Offer the Claude TTY ACP adapter as a Paseo provider, and manage it on the daemon host. |
+| [Workspace management](plugins/workspace-management) | Apply host-managed metadata such as toolchain-box trust zones. |
 
 Each app and plugin has its own README with installation, settings, and development details.
 

@@ -1,0 +1,17 @@
+{
+  "name": "@paseo-plugins/workspace-management",
+  "description": "Apply host-managed workspace metadata.",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"server/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@getpaseo/client": "^0.8.0",
+    "@getpaseo/plugin": "0.8.0",
+    "@types/node": "^26.2.0",
+    "typescript": "^5.9.3"
+  },
+  "type": "module"
+}
