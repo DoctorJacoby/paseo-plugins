@@ -1,110 +1,168 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import {
-  boundaryResolverFromConfig,
+  HOST_BOUNDARY,
+  boundaryResolverFromRoots,
+  checkoutRoots,
+  configPaths,
   loadBoundaryResolver,
-  parseBoundaryMap,
+  parseBoundaries,
   parseBoxProjects,
 } from "./boundary-config.ts";
 
-test("resolves a workspace through the box project and the host boundary map", () => {
-  const boundaries = parseBoundaryMap({
-    boundaries: {
-      "cebud-work": { projects: ["remi-plus"] },
-      "paseo-plugins": { projects: ["paseo-plugins"] },
-    },
-  });
-  const projects = parseBoxProjects({
-    projects: [
-      { name: "remi-plus", path: "~/projects/remi-plus" },
-      { name: "paseo-plugins", path: "~/projects/paseo-plugins" },
-    ],
-  });
-  const resolve = boundaryResolverFromConfig({ boundaries, projects, home: "/home/me" });
+// Verbatim shapes from the host's own files, comments and column padding included: the point of
+// these tests is that this plugin reads what the host actually writes.
+const BOUNDARIES = `# The security boundaries the credential broker serves.
+#
+#   <boundary>  <host>/<path pattern>  <token file>
 
-  assert.equal(resolve({ cwd: "/home/me/projects/remi-plus" }), "cebud-work");
-  assert.equal(
-    resolve({ cwd: "/home/me/projects/paseo-plugins/.paseo/worktrees/issue-88" }),
-    "paseo-plugins",
-  );
+cebud-work      gitlab.com/cebud/**                     ~/.config/gitlab-bot/token
+cebud-work      gitlab.com/kobe-work/work-organisation  ~/.config/gitlab-bot/token
+
+paseo-plugins   github.com/Someone/paseo-plugins        ~/.local/state/git/paseo-plugins.token
+`;
+
+const PROJECTS = `# The main checkouts whose every checkout runs its toolchain in a box.
+#
+#   <main checkout>  [<boundary>]
+
+~/projects/remi-plus  cebud-work
+~/projects/paseo-plugins  paseo-plugins
+~/projects/scratch
+~/projects/retired  decommissioned-zone
+`;
+
+const roots: string[] = [];
+
+async function tempRoot(prefix: string): Promise<string> {
+  const root = await mkdtemp(path.join(os.tmpdir(), prefix));
+  roots.push(root);
+  return root;
+}
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-test("uses the most specific checkout root without matching a sibling path prefix", () => {
-  const resolve = boundaryResolverFromConfig({
-    boundaries: parseBoundaryMap({
-      "parent-zone": ["parent"],
-      "nested-zone": ["nested"],
-    }),
-    projects: parseBoxProjects([
-      { name: "parent", path: "/srv/code" },
-      { name: "nested", path: "/srv/code/nested" },
-    ]),
-    home: "/home/me",
-  });
-
-  assert.equal(resolve({ cwd: "/srv/code/nested/worktree" }), "nested-zone");
-  assert.equal(resolve({ cwd: "/srv/code-other" }), null);
+test("reads the boundary names out of the broker's remote-pattern lines", () => {
+  assert.deepEqual(parseBoundaries(BOUNDARIES), ["cebud-work", "paseo-plugins"]);
 });
 
-test("accepts an inline boundary only when the host map declares it", () => {
-  const boundaries = parseBoundaryMap({
-    boundaries: [{ name: "known-zone", projects: [] }],
-  });
-  const projects = parseBoxProjects([
-    { name: "known", path: "/work/known", boundary: "known-zone" },
-    { name: "stale", path: "/work/stale", boundary: "removed-zone" },
+test("reads each boxed checkout and the boundary its line names", () => {
+  assert.deepEqual(parseBoxProjects(PROJECTS), [
+    { path: "~/projects/remi-plus", boundary: "cebud-work" },
+    { path: "~/projects/paseo-plugins", boundary: "paseo-plugins" },
+    { path: "~/projects/scratch", boundary: null },
+    { path: "~/projects/retired", boundary: "decommissioned-zone" },
   ]);
-  const resolve = boundaryResolverFromConfig({ boundaries, projects, home: "/home/me" });
-
-  assert.equal(resolve({ cwd: "/work/known" }), "known-zone");
-  assert.equal(resolve({ cwd: "/work/stale" }), null);
-  assert.equal(resolve({ cwd: "/work/unconfigured" }), null);
 });
 
-test("joins a project-to-boundary host map to keyed box-project config", () => {
-  const resolve = boundaryResolverFromConfig({
-    boundaries: parseBoundaryMap({
-      projects: {
-        "sleeyax/paseo-plugins": "paseo-plugins",
-      },
-    }),
-    projects: parseBoxProjects({
-      "paseo-plugins": {
-        path: "/home/me/projects/paseo-plugins",
-        repository: "sleeyax/paseo-plugins",
-      },
-    }),
-    home: "/home/me",
+test("the longest matching checkout wins, and a sibling prefix is not a match", () => {
+  const resolve = boundaryResolverFromRoots({
+    roots: [
+      { root: "/srv/code", boundary: "outer" },
+      { root: "/srv/code/nested", boundary: "inner" },
+    ],
+    boundaries: ["outer", "inner"],
   });
 
-  assert.equal(resolve({ cwd: "/home/me/projects/paseo-plugins" }), "paseo-plugins");
+  assert.equal(resolve({ cwd: "/srv/code/nested/deep" }), "inner");
+  assert.equal(resolve({ cwd: "/srv/code/other" }), "outer");
+  assert.equal(resolve({ cwd: "/srv/code-other" }), HOST_BOUNDARY);
 });
 
-test("loads the broker map and box-project config directly from their files", async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "workspace-management-"));
-  const boundaries = path.join(directory, "boundaries");
-  const projects = path.join(directory, "projects");
-  try {
-    await writeFile(
-      boundaries,
-      JSON.stringify({ boundaries: { "paseo-plugins": { projects: ["paseo-plugins"] } } }),
-    );
-    await writeFile(
-      projects,
-      JSON.stringify({ projects: [{ name: "paseo-plugins", path: "/projects/paseo-plugins" }] }),
-    );
+test("a checkout in no box at all is the host itself", () => {
+  const resolve = boundaryResolverFromRoots({
+    roots: [{ root: "/srv/boxed", boundary: "zone" }],
+    boundaries: ["zone"],
+  });
 
-    const resolve = await loadBoundaryResolver({
-      HOME: "/home/me",
-      WORKSPACE_MANAGEMENT_BOUNDARIES_PATH: boundaries,
-      WORKSPACE_MANAGEMENT_BOX_PROJECT_CONFIG: projects,
-    });
+  assert.equal(resolve({ cwd: "/home/me/scratch" }), HOST_BOUNDARY);
+});
 
-    assert.equal(resolve({ cwd: "/projects/paseo-plugins/worktree" }), "paseo-plugins");
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+test("a boxed checkout with no boundary, or one the broker dropped, gets no label", () => {
+  const resolve = boundaryResolverFromRoots({
+    roots: [
+      { root: "/srv/plain", boundary: null },
+      { root: "/srv/stale", boundary: "decommissioned-zone" },
+    ],
+    boundaries: ["zone"],
+  });
+
+  assert.equal(resolve({ cwd: "/srv/plain/work" }), null);
+  assert.equal(resolve({ cwd: "/srv/stale/work" }), null);
+});
+
+test("every worktree git recorded for a checkout counts as that checkout", async () => {
+  const root = await tempRoot("workspace-management-worktrees-");
+  const main = path.join(root, "main");
+  const detached = path.join(root, "detached-worktree");
+  await mkdir(path.join(main, ".git", "worktrees", "one"), { recursive: true });
+  await writeFile(
+    path.join(main, ".git", "worktrees", "one", "gitdir"),
+    `${path.join(detached, ".git")}\n`,
+  );
+
+  assert.deepEqual((await checkoutRoots(main)).sort(), [detached, main].sort());
+});
+
+test("a checkout with no worktrees directory is just itself", async () => {
+  const root = await tempRoot("workspace-management-bare-");
+
+  assert.deepEqual(await checkoutRoots(root), [root]);
+});
+
+test("resolves a workspace end to end from the two host files", async () => {
+  const home = await tempRoot("workspace-management-home-");
+  const configRoot = await tempRoot("workspace-management-config-");
+  const boundaries = path.join(configRoot, "boundaries");
+  const projects = path.join(configRoot, "projects");
+  await writeFile(boundaries, BOUNDARIES);
+  await writeFile(projects, PROJECTS);
+  const plugins = path.join(home, "projects", "paseo-plugins");
+  const worktree = path.join(home, "worktrees", "plugins-issue-88");
+  await mkdir(path.join(plugins, ".git", "worktrees", "issue-88"), { recursive: true });
+  await writeFile(
+    path.join(plugins, ".git", "worktrees", "issue-88", "gitdir"),
+    `${path.join(worktree, ".git")}\n`,
+  );
+  await mkdir(path.join(home, "projects", "remi-plus"), { recursive: true });
+
+  const resolve = await loadBoundaryResolver({
+    HOME: home,
+    WORKSPACE_MANAGEMENT_BOUNDARIES_PATH: boundaries,
+    WORKSPACE_MANAGEMENT_BOX_PROJECT_CONFIG: projects,
+  });
+
+  assert.equal(resolve({ cwd: path.join(home, "projects", "remi-plus") }), "cebud-work");
+  assert.equal(resolve({ cwd: plugins }), "paseo-plugins");
+  assert.equal(resolve({ cwd: worktree }), "paseo-plugins");
+  assert.equal(resolve({ cwd: path.join(home, "projects", "scratch") }), null);
+  assert.equal(resolve({ cwd: path.join(home, "projects", "retired") }), null);
+  assert.equal(resolve({ cwd: path.join(home, "notes") }), HOST_BOUNDARY);
+});
+
+test("missing host files leave every workspace on the host", async () => {
+  const configRoot = await tempRoot("workspace-management-absent-");
+
+  const resolve = await loadBoundaryResolver({
+    HOME: configRoot,
+    WORKSPACE_MANAGEMENT_BOUNDARIES_PATH: path.join(configRoot, "no-boundaries"),
+    WORKSPACE_MANAGEMENT_BOX_PROJECT_CONFIG: path.join(configRoot, "no-projects"),
+  });
+
+  assert.equal(resolve({ cwd: "/anywhere" }), HOST_BOUNDARY);
+});
+
+test("the host's own paths are the defaults", () => {
+  const paths = configPaths({ HOME: "/home/me" });
+
+  assert.equal(
+    paths.boundaries,
+    "/home/me/dotfiles/hosts/vps/credential-broker/boundaries",
+  );
+  assert.equal(paths.boxProjects, "/home/me/dotfiles/hosts/vps/toolchain-box/projects");
 });

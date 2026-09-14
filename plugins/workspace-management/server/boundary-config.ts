@@ -4,148 +4,52 @@ import path from "node:path";
 
 export type Env = Record<string, string | undefined>;
 
-export interface ParsedBoundaryMap {
-  selectors: Readonly<Record<string, readonly string[]>>;
-}
-
+/** A checkout the host boxes, and the credential boundary its boxes are given. */
 export interface BoxProject {
-  name: string;
+  /** The main checkout, as the host wrote it -- `~` still unexpanded. */
   path: string;
   boundary: string | null;
-  aliases: readonly string[];
 }
 
 export interface BoundaryWorkspace {
   cwd: string;
-  projectId?: string;
   projectRootPath?: string;
 }
 
-type JsonObject = Record<string, unknown>;
+/** What a workspace outside every boxed checkout runs in: this account, on the host itself. */
+export const HOST_BOUNDARY = "host";
 
-function object(value: unknown): JsonObject | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as JsonObject)
-    : null;
-}
+export type BoundaryResolver = (workspace: BoundaryWorkspace) => string | null;
 
-function nonempty(value: unknown): string | null {
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
-}
-
-function strings(value: unknown): string[] {
-  if (typeof value === "string") return value.trim() === "" ? [] : [value.trim()];
-  if (Array.isArray(value)) return value.flatMap(strings);
-  const record = object(value);
-  if (!record) return [];
-  const scalarKeys = ["name", "id", "project", "repository", "repo", "remote", "path"];
-  const collectionKeys = [
-    "projects",
-    "repositories",
-    "repos",
-    "remotes",
-    "targets",
-    "checkouts",
-    "sources",
-    "github",
-    "gitlab",
-  ];
-  return [
-    ...scalarKeys.flatMap((key) => strings(record[key])),
-    ...collectionKeys.flatMap((key) => strings(record[key])),
-  ];
-}
-
-function addBoundary(
-  selectors: Record<string, string[]>,
-  boundaryInput: unknown,
-  selectorInputs: readonly unknown[],
-): void {
-  const boundary = nonempty(boundaryInput);
-  if (!boundary) return;
-  const current = selectors[boundary] ?? [];
-  selectors[boundary] = [...new Set([...current, ...selectorInputs.flatMap(strings)])];
+/**
+ * Both host files are the same line-oriented shape: `#` starts a comment, blank lines are
+ * nothing, and a line is whitespace-separated fields. They are read here exactly as the host's
+ * own `toolchain-box` and `credential-broker` read them, because a second dialect of the same
+ * file is a second thing to keep true.
+ */
+export function configFields(contents: string): string[][] {
+  return contents
+    .split("\n")
+    .map((line) => line.replace(/#.*$/, "").trim())
+    .filter((line) => line !== "")
+    .map((line) => line.split(/\s+/));
 }
 
 /**
- * The broker map has existed in keyed and list-shaped forms. Keep that host-owned shape at this
- * edge; everything after it consumes the same boundary-to-project join.
+ * The boundaries file is one line per git remote pattern, `<boundary> <pattern> <token file>`, so
+ * a boundary appears once per remote it can reach. Only the set of names is wanted here: which
+ * remotes a boundary holds a token for is the broker's business, not a label's.
  */
-export function parseBoundaryMap(input: unknown): ParsedBoundaryMap {
-  const selectors: Record<string, string[]> = {};
-  const root = object(input);
-  const boundarySection = root?.boundaries ?? (root?.projects ? {} : input);
-
-  if (Array.isArray(boundarySection)) {
-    for (const item of boundarySection) {
-      const entry = object(item);
-      if (!entry) continue;
-      addBoundary(selectors, entry.name ?? entry.id ?? entry.boundary, [entry]);
-    }
-  } else {
-    const entries = object(boundarySection);
-    if (entries) {
-      for (const [key, value] of Object.entries(entries)) {
-        if (typeof value === "string") addBoundary(selectors, value, [key]);
-        else addBoundary(selectors, key, [value]);
-      }
-    }
-  }
-
-  const projectMap = object(root?.projects);
-  if (projectMap) {
-    for (const [selector, boundary] of Object.entries(projectMap)) {
-      addBoundary(selectors, boundary, [selector]);
-    }
-  }
-  return { selectors };
+export function parseBoundaries(contents: string): string[] {
+  return [...new Set(configFields(contents).map(([boundary]) => boundary))];
 }
 
-function projectFromEntry(key: string | null, value: unknown): BoxProject | null {
-  if (typeof value === "string" && key) {
-    return { name: key, path: value, boundary: null, aliases: [key] };
-  }
-  const entry = object(value);
-  if (!entry) return null;
-  const projectPath = nonempty(
-    entry.path ?? entry.root ?? entry.cwd ?? entry.directory ?? entry.checkout,
-  );
-  if (!projectPath) return null;
-  const name = nonempty(entry.name ?? entry.project ?? entry.id) ?? key ?? projectPath;
-  const aliases = new Set<string>([
-    name,
-    ...strings(entry.id),
-    ...strings(entry.project),
-    ...strings(entry.repository),
-    ...strings(entry.repo),
-    ...strings(entry.remote),
-    ...strings(entry.remotes),
-    ...strings(entry.github),
-    ...strings(entry.gitlab),
-  ]);
-  return {
-    name,
+/** The projects file is `<main checkout> [<boundary>]`; a line with no boundary declares none. */
+export function parseBoxProjects(contents: string): BoxProject[] {
+  return configFields(contents).map(([projectPath, boundary]) => ({
     path: projectPath,
-    boundary: nonempty(entry.boundary),
-    aliases: [...aliases],
-  };
-}
-
-export function parseBoxProjects(input: unknown): BoxProject[] {
-  const root = object(input);
-  const section = root?.projects ?? input;
-  if (Array.isArray(section)) {
-    return section.flatMap((entry) => {
-      const project = projectFromEntry(null, entry);
-      return project ? [project] : [];
-    });
-  }
-  const entries = object(section);
-  if (!entries) return [];
-  return Object.entries(entries).flatMap(([key, entry]) => {
-    const project = projectFromEntry(key, entry);
-    return project ? [project] : [];
-  });
+    boundary: boundary ?? null,
+  }));
 }
 
 function expandHome(value: string, home: string): string {
@@ -154,75 +58,69 @@ function expandHome(value: string, home: string): string {
   return value;
 }
 
-function pathContains(root: string, candidate: string): boolean {
+function contains(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function key(value: string): string {
-  return value.trim().toLowerCase();
+/**
+ * Every checkout of one project: the main one, plus each worktree git has recorded for it. This
+ * is the host's own rule -- a project line boxes the main checkout and every worktree git lists
+ * for it -- read from `.git/worktrees`, which git writes on the host, rather than from any
+ * working tree, which whatever runs in the box can write.
+ */
+export async function checkoutRoots(main: string): Promise<string[]> {
+  const roots = [main];
+  const worktrees = path.join(main, ".git", "worktrees");
+  let names: string[];
+  try {
+    names = await fs.readdir(worktrees);
+  } catch {
+    return roots;
+  }
+  for (const name of names) {
+    try {
+      const gitdir = (await fs.readFile(path.join(worktrees, name, "gitdir"), "utf8")).trim();
+      if (gitdir) roots.push(path.dirname(gitdir));
+    } catch {
+      // A worktree git is midway through writing, or has just been removed. Neither is this
+      // plugin's business, and a missing root only costs that workspace its label.
+    }
+  }
+  return roots;
 }
 
-export function boundaryResolverFromConfig(input: {
-  boundaries: ParsedBoundaryMap;
-  projects: readonly BoxProject[];
-  home: string;
-}): (workspace: BoundaryWorkspace) => string | null {
-  const boundarySelectors = Object.entries(input.boundaries.selectors).map(
-    ([boundary, selectors]) => ({ boundary, selectors: new Set(selectors.map(key)) }),
-  );
-  const knownBoundaries = new Set(boundarySelectors.map(({ boundary }) => key(boundary)));
-  const projects = input.projects.map((project) => ({
-    ...project,
-    path: path.resolve(expandHome(project.path, input.home)),
-  }));
+export interface BoundaryRoot {
+  root: string;
+  boundary: string | null;
+}
+
+/**
+ * Resolution is longest-root-wins, so a worktree nested under its own main checkout resolves to
+ * itself. A workspace in no boxed checkout at all is running on the host, which is a trust zone
+ * of its own and the loudest one. A boxed checkout whose boundary the broker does not declare
+ * gets nothing: it is neither the host nor a boundary anybody still holds a token for, and
+ * inventing a label for it would say something untrue.
+ */
+export function boundaryResolverFromRoots(input: {
+  roots: readonly BoundaryRoot[];
+  boundaries: readonly string[];
+}): BoundaryResolver {
+  const declared = new Set(input.boundaries.map((boundary) => boundary.toLowerCase()));
+  const roots = [...input.roots].sort((left, right) => right.root.length - left.root.length);
 
   return (workspace) => {
-    const candidates = [workspace.projectRootPath, workspace.cwd]
+    const candidates = [workspace.cwd, workspace.projectRootPath]
       .filter((value): value is string => Boolean(value))
-      .map((value) => path.resolve(expandHome(value, input.home)));
-    const project = projects
-      .filter(
-        (candidate) =>
-          (workspace.projectId !== undefined &&
-            candidate.aliases.some((alias) => alias === workspace.projectId)) ||
-          candidates.some((candidatePath) => pathContains(candidate.path, candidatePath)),
-      )
-      .sort((left, right) => right.path.length - left.path.length)[0];
-    if (!project) return null;
-    if (project.boundary && knownBoundaries.has(key(project.boundary))) return project.boundary;
-    const aliases = new Set([project.name, project.path, ...project.aliases].map(key));
-    return (
-      boundarySelectors.find(({ selectors }) => [...aliases].some((alias) => selectors.has(alias)))
-        ?.boundary ?? null
+      .map((value) => path.resolve(value));
+    if (candidates.length === 0) return null;
+    const match = roots.find((entry) =>
+      candidates.some((candidate) => contains(entry.root, candidate)),
     );
+    if (!match) return HOST_BOUNDARY;
+    if (!match.boundary || !declared.has(match.boundary.toLowerCase())) return null;
+    return match.boundary;
   };
-}
-
-async function readJson(target: string): Promise<unknown[]> {
-  try {
-    const stat = await fs.stat(target);
-    if (stat.isDirectory()) {
-      const names = (await fs.readdir(target)).sort();
-      const values = await Promise.all(names.map((name) => readJson(path.join(target, name))));
-      return values.flat();
-    }
-    if (!stat.isFile()) return [];
-    return [JSON.parse(await fs.readFile(target, "utf8")) as unknown];
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw new Error(`Could not read boundary config ${target}`, { cause: error });
-  }
-}
-
-function mergeBoundaryMaps(maps: readonly ParsedBoundaryMap[]): ParsedBoundaryMap {
-  const selectors: Record<string, string[]> = {};
-  for (const map of maps) {
-    for (const [boundary, values] of Object.entries(map.selectors)) {
-      selectors[boundary] = [...new Set([...(selectors[boundary] ?? []), ...values])];
-    }
-  }
-  return { selectors };
 }
 
 export function configPaths(env: Env = process.env): {
@@ -243,15 +141,35 @@ export function configPaths(env: Env = process.env): {
   };
 }
 
-export async function loadBoundaryResolver(
-  env: Env = process.env,
-): Promise<(workspace: BoundaryWorkspace) => string | null> {
+async function readConfig(target: string): Promise<string> {
+  try {
+    return await fs.readFile(target, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw new Error(`Could not read host config ${target}`, { cause: error });
+  }
+}
+
+/**
+ * Read afresh on every reconciliation. The host's maps change without this plugin hearing about
+ * it -- a project gets boxed, a worktree is added -- and they are two small files.
+ */
+export async function loadBoundaryResolver(env: Env = process.env): Promise<BoundaryResolver> {
   const paths = configPaths(env);
-  const [boundaryFiles, projectFiles] = await Promise.all([
-    readJson(paths.boundaries),
-    readJson(paths.boxProjects),
+  const [boundaryFile, projectFile] = await Promise.all([
+    readConfig(paths.boundaries),
+    readConfig(paths.boxProjects),
   ]);
-  const boundaries = mergeBoundaryMaps(boundaryFiles.map(parseBoundaryMap));
-  const projects = projectFiles.flatMap(parseBoxProjects);
-  return boundaryResolverFromConfig({ boundaries, projects, home: paths.home });
+  const projects = parseBoxProjects(projectFile);
+  const roots = await Promise.all(
+    projects.map(async (project) => {
+      const main = path.resolve(expandHome(project.path, paths.home));
+      const checkouts = await checkoutRoots(main);
+      return checkouts.map((root) => ({ root, boundary: project.boundary }));
+    }),
+  );
+  return boundaryResolverFromRoots({
+    roots: roots.flat(),
+    boundaries: parseBoundaries(boundaryFile),
+  });
 }
