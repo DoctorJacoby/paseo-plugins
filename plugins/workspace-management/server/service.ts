@@ -1,4 +1,4 @@
-import type { BoundaryWorkspace } from "./boundary-config.ts";
+import type { BoundaryResolver } from "./boundary-config.ts";
 import {
   BoundaryLabelManager,
   type BoundaryLabelDefinitions,
@@ -6,18 +6,8 @@ import {
   type ManagedWorkspace,
 } from "./boundary-labels.ts";
 
-const WORKSPACE_PAGE_LIMIT = 200;
-
 export interface ManagementClient extends LabelClient {
-  connect(): Promise<void>;
-  close(): Promise<void>;
-  fetchWorkspaces(options: {
-    filter?: { projectId?: string };
-    page: { limit: number; cursor?: string };
-  }): Promise<{
-    entries: ManagedWorkspace[];
-    pageInfo: { nextCursor?: string | null };
-  }>;
+  listWorkspaces(): Promise<ManagedWorkspace[]>;
 }
 
 export interface CreatedWorkspace {
@@ -26,71 +16,55 @@ export interface CreatedWorkspace {
   cwd: string;
 }
 
-type ResolveBoundary = (workspace: BoundaryWorkspace) => string | null;
-
+/**
+ * The plugin's own state, kept out of `index.server.ts` so it can be driven by a fake client.
+ *
+ * The backfill is lazy rather than run at startup, and that is forced rather than chosen: the
+ * server runtime hands a plugin its `PaseoApi` on a hook or an RPC context and nowhere else, so
+ * the contribution function has no daemon to talk to. The first workspace event is therefore what
+ * pays for the sweep over everything already open, and every event after it costs one workspace.
+ */
 export class WorkspaceManagementService {
-  private readonly client: ManagementClient;
   private readonly definitions: BoundaryLabelDefinitions;
-  private readonly loadResolver: () => Promise<ResolveBoundary>;
-  private resolveBoundary: ResolveBoundary = () => null;
+  private readonly loadResolver: () => Promise<BoundaryResolver>;
+  private resolveBoundary: BoundaryResolver = () => null;
   private manager: BoundaryLabelManager | null = null;
-  private startup: Promise<void> | null = null;
+  private backfilled = false;
 
   constructor(input: {
-    client: ManagementClient;
     definitions: BoundaryLabelDefinitions;
-    loadResolver: () => Promise<ResolveBoundary>;
+    loadResolver: () => Promise<BoundaryResolver>;
   }) {
-    this.client = input.client;
     this.definitions = input.definitions;
     this.loadResolver = input.loadResolver;
   }
 
-  start(): Promise<void> {
-    if (this.startup) return this.startup;
-    this.startup = this.startOnce();
-    return this.startup;
+  async workspaceCreated(client: ManagementClient, event: CreatedWorkspace): Promise<void> {
+    // The host's maps are re-read per event: a project boxed an hour ago should not need a
+    // daemon restart to start colouring its workspaces.
+    this.resolveBoundary = await this.loadResolver();
+    const manager = this.ensureManager(client);
+    const created: ManagedWorkspace = { ...event, labels: [] };
+    if (this.backfilled) {
+      await manager.assign(created);
+      return;
+    }
+    // The directory already holds the new workspace in the ordinary case; carrying it separately
+    // only covers the daemon answering from a snapshot taken before this event.
+    const open = await client.listWorkspaces();
+    const workspaces = open.some((workspace) => workspace.id === created.id)
+      ? open
+      : [...open, created];
+    this.backfilled = true;
+    await manager.backfill(workspaces);
   }
 
-  private async startOnce(): Promise<void> {
-    await this.client.connect();
-    this.resolveBoundary = await this.loadResolver();
-    this.manager = new BoundaryLabelManager({
-      client: this.client,
+  private ensureManager(client: ManagementClient): BoundaryLabelManager {
+    this.manager ??= new BoundaryLabelManager({
+      client,
       definitions: this.definitions,
       resolveBoundary: (workspace) => this.resolveBoundary(workspace),
     });
-    await this.manager.backfill(await this.listWorkspaces());
-  }
-
-  async workspaceCreated(event: CreatedWorkspace): Promise<void> {
-    await this.start();
-    this.resolveBoundary = await this.loadResolver();
-    const candidates = await this.listWorkspaces({ projectId: event.projectId });
-    const workspace =
-      candidates.find((candidate) => candidate.id === event.id) ?? {
-        ...event,
-        labels: [],
-      };
-    await this.manager?.assign(workspace);
-  }
-
-  private async listWorkspaces(filter?: { projectId?: string }): Promise<ManagedWorkspace[]> {
-    const workspaces: ManagedWorkspace[] = [];
-    let cursor: string | undefined;
-    do {
-      const page = await this.client.fetchWorkspaces({
-        ...(filter ? { filter } : {}),
-        page: { limit: WORKSPACE_PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
-      });
-      workspaces.push(...page.entries);
-      cursor = page.pageInfo.nextCursor ?? undefined;
-    } while (cursor);
-    return workspaces;
-  }
-
-  async stop(): Promise<void> {
-    await this.startup?.catch(() => undefined);
-    await this.client.close();
+    return this.manager;
   }
 }

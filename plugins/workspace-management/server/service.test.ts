@@ -5,56 +5,16 @@ import type { ManagedWorkspace, WorkspaceLabelDefinition } from "./boundary-labe
 import { WorkspaceManagementService, type ManagementClient } from "./service.ts";
 
 class FakeManagementClient implements ManagementClient {
-  connected = false;
-  closed = false;
+  listCalls = 0;
   readonly assignments: string[] = [];
-  readonly fetches: Array<{ filter?: { projectId?: string }; page?: { limit: number; cursor?: string } }> = [];
   readonly workspaces: ManagedWorkspace[] = [
-    {
-      id: "old-one",
-      projectId: "project-one",
-      cwd: "/boxes/old-one",
-      projectRootPath: "/projects/one",
-      labels: [],
-    },
-    {
-      id: "old-two",
-      projectId: "project-two",
-      cwd: "/boxes/old-two",
-      projectRootPath: "/projects/two",
-      labels: [],
-    },
-    {
-      id: "new-one",
-      projectId: "project-one",
-      cwd: "/boxes/new-one",
-      projectRootPath: "/projects/one",
-      labels: [],
-    },
+    { id: "open-one", projectId: "project-one", cwd: "/boxes/one", labels: [] },
+    { id: "open-two", projectId: "project-two", cwd: "/elsewhere/two", labels: [] },
   ];
 
-  async connect() {
-    this.connected = true;
-  }
-
-  async close() {
-    this.closed = true;
-  }
-
-  async fetchWorkspaces(options: {
-    filter?: { projectId?: string };
-    page?: { limit: number; cursor?: string };
-  }) {
-    this.fetches.push(options);
-    const selected = options.filter?.projectId
-      ? this.workspaces.filter((workspace) => workspace.projectId === options.filter?.projectId)
-      : this.workspaces.filter((workspace) => workspace.id.startsWith("old"));
-    if (options.filter?.projectId) {
-      return { entries: selected, pageInfo: { nextCursor: null } };
-    }
-    return options.page?.cursor
-      ? { entries: selected.slice(1), pageInfo: { nextCursor: null } }
-      : { entries: selected.slice(0, 1), pageInfo: { nextCursor: "second" } };
+  async listWorkspaces(): Promise<ManagedWorkspace[]> {
+    this.listCalls += 1;
+    return this.workspaces.map((workspace) => ({ ...workspace }));
   }
 
   async listWorkspaceLabels() {
@@ -80,58 +40,84 @@ const definitions = {
 } as const;
 
 function resolve(workspace: BoundaryWorkspace): string | null {
-  return workspace.projectRootPath === "/projects/one" ? "zone" : null;
+  return workspace.cwd.startsWith("/boxes/") ? "zone" : null;
 }
 
-test("plugin start connects, paginates active workspaces, and backfills them", async () => {
-  const client = new FakeManagementClient();
-  const service = new WorkspaceManagementService({
-    client,
+function service(loads: { count: number } = { count: 0 }) {
+  return new WorkspaceManagementService({
     definitions,
-    loadResolver: async () => resolve,
+    loadResolver: async () => {
+      loads.count += 1;
+      return resolve;
+    },
   });
+}
 
-  await service.start();
-
-  assert.equal(client.connected, true);
-  assert.deepEqual(client.assignments, ["old-one"]);
-  assert.deepEqual(
-    client.fetches.map((entry) => entry.page?.cursor ?? null),
-    [null, "second"],
-  );
-});
-
-test("the creation hook resolves against the workspace project root", async () => {
+test("the first workspace event backfills every open workspace", async () => {
   const client = new FakeManagementClient();
-  const service = new WorkspaceManagementService({
-    client,
-    definitions,
-    loadResolver: async () => resolve,
-  });
-  await service.start();
-  client.assignments.length = 0;
-  client.fetches.length = 0;
 
-  await service.workspaceCreated({
+  await service().workspaceCreated(client, {
     id: "new-one",
     projectId: "project-one",
     cwd: "/boxes/new-one",
   });
 
-  assert.deepEqual(client.assignments, ["new-one"]);
-  assert.equal(client.fetches[0]?.filter?.projectId, "project-one");
+  assert.equal(client.listCalls, 1);
+  assert.deepEqual(client.assignments, ["open-one", "new-one"]);
 });
 
-test("stop closes the plugin-owned daemon connection", async () => {
+test("later events label only the workspace that was created", async () => {
   const client = new FakeManagementClient();
-  const service = new WorkspaceManagementService({
-    client,
-    definitions,
-    loadResolver: async () => resolve,
+  const managed = service();
+
+  await managed.workspaceCreated(client, {
+    id: "new-one",
+    projectId: "project-one",
+    cwd: "/boxes/new-one",
   });
-  await service.start();
+  client.assignments.length = 0;
 
-  await service.stop();
+  await managed.workspaceCreated(client, {
+    id: "new-two",
+    projectId: "project-one",
+    cwd: "/boxes/new-two",
+  });
 
-  assert.equal(client.closed, true);
+  assert.equal(client.listCalls, 1);
+  assert.deepEqual(client.assignments, ["new-two"]);
+});
+
+test("a workspace the daemon has not listed yet is still labeled", async () => {
+  const client = new FakeManagementClient();
+
+  await service().workspaceCreated(client, {
+    id: "unlisted",
+    projectId: "project-one",
+    cwd: "/boxes/unlisted",
+  });
+
+  assert.ok(client.assignments.includes("unlisted"));
+});
+
+test("the host maps are re-read on every event", async () => {
+  const client = new FakeManagementClient();
+  const loads = { count: 0 };
+  const managed = service(loads);
+
+  await managed.workspaceCreated(client, { id: "a", projectId: "p", cwd: "/boxes/a" });
+  await managed.workspaceCreated(client, { id: "b", projectId: "p", cwd: "/boxes/b" });
+
+  assert.equal(loads.count, 2);
+});
+
+test("a workspace outside every configured boundary is left unlabeled", async () => {
+  const client = new FakeManagementClient();
+
+  await service().workspaceCreated(client, {
+    id: "outside",
+    projectId: "project-two",
+    cwd: "/elsewhere/outside",
+  });
+
+  assert.equal(client.assignments.includes("outside"), false);
 });

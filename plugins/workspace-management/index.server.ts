@@ -1,7 +1,7 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { loadBoundaryResolver } from "./server/boundary-config.ts";
-import { WorkspaceManagementDaemonClient } from "./server/daemon.ts";
 import { BOUNDARY_LABELS } from "./server/labels.ts";
+import { PaseoManagementClient } from "./server/paseo-client.ts";
 import { WorkspaceManagementService } from "./server/service.ts";
 
 function report(operation: string, error: unknown): void {
@@ -13,15 +13,17 @@ function report(operation: string, error: unknown): void {
 
 export default function contribute(server: PluginServerContext) {
   const service = new WorkspaceManagementService({
-    client: new WorkspaceManagementDaemonClient(),
     definitions: BOUNDARY_LABELS,
     loadResolver: () => loadBoundaryResolver(),
   });
 
-  void service.start().catch((error) => report("startup backfill", error));
-  server.on("workspace.created", ({ workspace }) =>
-    service.workspaceCreated(workspace).catch((error) => report("workspace creation hook", error)),
+  // The hook's context is where a server-side plugin is given its `PaseoApi`; there is no other
+  // handle on the daemon, which is why the backfill rides the first event rather than startup.
+  const unsubscribe = server.on("workspace.created", ({ workspace }, { paseo }) =>
+    service
+      .workspaceCreated(new PaseoManagementClient(paseo), workspace)
+      .catch((error) => report("workspace creation hook", error)),
   );
 
-  return () => service.stop();
+  return () => unsubscribe();
 }
