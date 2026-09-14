@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -835,6 +836,193 @@ test("clears a residue Claude had wrapped, not just the last line of it", async 
   } finally {
     await agent.close();
     await rm(runtimeRoot, { force: true, recursive: true });
+  }
+});
+
+/**
+ * The auto-mode setup question, as Claude draws it: in the input box's place, its selected row marked
+ * with the box's own glyph. Read off a session that lost two messages into one of these on 2026-09-13.
+ */
+const AUTO_MODE_SETUP_SCREEN = [
+  "\u001b[2J\u001b[H",
+  "Claude Code reads this project, your recent Claude sessions, and optionally your shell history and other repositories.",
+  "\u276f Also scan shell history    [\u2714]",
+  "  Also scan your other repos   [ ]",
+  "Enter to confirm \u00b7 Esc to cancel",
+].join("\r\n");
+
+/** What Claude keeps for itself while a session is up: `sessions/<pid>.json` under its config directory. */
+async function writeClaudeSessionState(configDirectory: string, claudePid: number, state: Record<string, unknown>): Promise<string> {
+  const filePath = path.join(configDirectory, "sessions", `${claudePid}.json`);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, JSON.stringify({ pid: claudePid, kind: "interactive", ...state }));
+  return filePath;
+}
+
+const ESCAPE_KEY = "\u001b";
+
+test("closes a question Claude has open, then sends the prompt into the box behind it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-open-dialog-test-"));
+  const configDirectory = path.join(root, "claude");
+  const runtimeRoot = path.join(root, "runtime");
+  const claudePid = 6400;
+  const statePath = await writeClaudeSessionState(configDirectory, claudePid, { status: "waiting", waitingFor: "dialog open" });
+  let agent!: ClaudeTtyAgent;
+  let pty!: FakePty;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    pty = new FakePty(claudePid, (text) => {
+      // Escape closes the question and Claude goes back to saying nothing has the keyboard.
+      if (text === ESCAPE_KEY) {
+        writeFileSync(statePath, JSON.stringify({ pid: claudePid, status: "idle" }));
+        pty.emitData("\u001b[2J\u001b[H\u276f\r\n  \u23f8 auto mode on\r\n");
+      }
+      if (text.startsWith("\u001b[200~")) pty.emitData("\u001b[2J\u001b[H\u276f commit this\r\n");
+      if (text === "\r") pty.emitData("\u001b[2J\u001b[H\u276f\r\n");
+    });
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    setImmediate(() => pty.emitData(AUTO_MODE_SETUP_SCREEN));
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(createConnection([]), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), claudeConfigDir: configDirectory, startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, contextRefreshTimeoutMs: 0 });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/open-dialog", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "commit this" }] });
+    await waitFor(() => pty !== undefined && pty.writes.length === 3);
+    // The question is closed before a single key of the prompt goes anywhere near it: the clear would
+    // walk its selection, the space that ends the paste would toggle the checkbox, and Enter would confirm.
+    assert.deepEqual(pty.keystrokes, [ESCAPE_KEY, CLEAR_INPUT_BOX, "\u001b[200~commit this \u001b[201~", "\r"]);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+  } finally {
+    await agent.close();
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("fails the prompt, rather than answering it, when a question will not close", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-stuck-dialog-test-"));
+  const configDirectory = path.join(root, "claude");
+  const runtimeRoot = path.join(root, "runtime");
+  const claudePid = 6450;
+  await writeClaudeSessionState(configDirectory, claudePid, { status: "waiting", waitingFor: "dialog open" });
+  let agent!: ClaudeTtyAgent;
+  let pty!: FakePty;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    // A question Escape does not close: Claude goes on saying it has the keyboard.
+    pty = new FakePty(claudePid);
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    setImmediate(() => pty.emitData(AUTO_MODE_SETUP_SCREEN));
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(createConnection([]), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), claudeConfigDir: configDirectory, startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, contextRefreshTimeoutMs: 0, dialogDismissMs: 20 });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/stuck-dialog", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "commit this" }] });
+    // The screen alone says the input box is there holding `Also scan shell history    [✔]`, so both the
+    // refusal and what it names have to come from what Claude says about itself.
+    await assert.rejects(turn, /waiting on dialog open/);
+    // Nothing but the keys that ask for the keyboard back; the error carries the screen instead.
+    assert.deepEqual(pty.keystrokes, [ESCAPE_KEY, ESCAPE_KEY, ESCAPE_KEY]);
+    await assert.rejects(turn, /Also scan shell history/);
+  } finally {
+    await agent.close();
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("re-pastes a prompt the question behind it swallowed, instead of sending an empty box", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-late-dialog-test-"));
+  const configDirectory = path.join(root, "claude");
+  const runtimeRoot = path.join(root, "runtime");
+  const claudePid = 6500;
+  const statePath = await writeClaudeSessionState(configDirectory, claudePid, { status: "idle" });
+  let agent!: ClaudeTtyAgent;
+  let pty!: FakePty;
+  let questionUp = false;
+  // The question opens once, behind the first paste, and does not come back after it is closed.
+  let questionRaised = false;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    // The gap the 2026-09-13 session fell into: the box was a box when the prompt was cleared into it, and
+    // a question had the keyboard by the time the submit key went, so the paste landed in the question.
+    pty = new FakePty(claudePid, (text) => {
+      if (text.startsWith("\u001b[200~") && !questionRaised) {
+        questionUp = true;
+        questionRaised = true;
+        writeFileSync(statePath, JSON.stringify({ pid: claudePid, status: "waiting", waitingFor: "dialog open" }));
+        pty.emitData(AUTO_MODE_SETUP_SCREEN);
+        return;
+      }
+      if (text === ESCAPE_KEY) {
+        questionUp = false;
+        writeFileSync(statePath, JSON.stringify({ pid: claudePid, status: "idle" }));
+        pty.emitData("\u001b[2J\u001b[H\u276f\r\n  \u23f8 auto mode on\r\n");
+      }
+      if (text.startsWith("\u001b[200~") && !questionUp) pty.emitData("\u001b[2J\u001b[H\u276f commit this\r\n");
+      if (text === "\r") pty.emitData("\u001b[2J\u001b[H\u276f\r\n");
+    });
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    setImmediate(() => pty.emitData("\u001b[2J\u001b[H\u276f\r\n  \u23f8 auto mode on\r\n"));
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(createConnection([]), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), claudeConfigDir: configDirectory, startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, contextRefreshTimeoutMs: 0 });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/late-dialog", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "commit this" }] });
+    await waitFor(() => pty !== undefined && pty.writes.length === 4);
+    // The submit key was withheld while the question was up, and the prompt pasted again once it was gone:
+    // Claude had none of it, and Enter on the empty box behind the question would have sent nothing.
+    assert.deepEqual(pty.keystrokes, [
+      CLEAR_INPUT_BOX,
+      "\u001b[200~commit this \u001b[201~",
+      ESCAPE_KEY,
+      CLEAR_INPUT_BOX,
+      "\u001b[200~commit this \u001b[201~",
+      "\r",
+    ]);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+  } finally {
+    await agent.close();
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("sends the prompt as usual when Claude says nothing else has the keyboard", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-no-dialog-test-"));
+  const configDirectory = path.join(root, "claude");
+  const runtimeRoot = path.join(root, "runtime");
+  const claudePid = 6600;
+  await writeClaudeSessionState(configDirectory, claudePid, { status: "idle" });
+  let agent!: ClaudeTtyAgent;
+  let pty!: FakePty;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    pty = new FakePty(claudePid, (text) => {
+      if (text.startsWith("\u001b[200~")) pty.emitData("\u001b[2J\u001b[H\u276f commit this\r\n");
+      if (text === "\r") pty.emitData("\u001b[2J\u001b[H\u276f\r\n");
+    });
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    setImmediate(() => pty.emitData("\u001b[2J\u001b[H\u276f\r\n  \u23f8 auto mode on\r\n"));
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(createConnection([]), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), claudeConfigDir: configDirectory, startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, contextRefreshTimeoutMs: 0 });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/no-dialog", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "commit this" }] });
+    await waitFor(() => pty !== undefined && pty.writes.length === 2);
+    assert.deepEqual(pty.keystrokes, [CLEAR_INPUT_BOX, "\u001b[200~commit this \u001b[201~", "\r"]);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+  } finally {
+    await agent.close();
+    await rm(root, { force: true, recursive: true });
   }
 });
 
