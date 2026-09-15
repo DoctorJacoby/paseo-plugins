@@ -12,7 +12,7 @@ import { writeLog } from "./log.ts";
 import { cleanupPromptFiles, materializePrompt } from "./prompt-content.ts";
 import { markRuntimeDirectory, runtimePrefix } from "./runtime-directories.ts";
 import { INHERIT_EFFORT_ID, INHERIT_MODEL_ID } from "./session-options.ts";
-import { TerminalScreen } from "./terminal-screen.ts";
+import { TERMINAL_COLS, TERMINAL_ROWS, TerminalScreen } from "./terminal-screen.ts";
 import { SubagentWatcher } from "./subagent-watcher.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import { TranscriptTranslator } from "./transcript-translator.ts";
@@ -56,6 +56,16 @@ const BRACKETED_PASTE_END = "\u001b[201~";
 // Claude keeps its completion menu open while the cursor sits at the end of an @mention or a /command, and the submit key then picks an entry instead of sending the prompt.
 // A trailing space closes the menu, so every paste ends with one.
 const COMPLETION_DISMISS = " ";
+// Claude appends a bracketed paste to whatever its input box already holds rather than replacing it, so a
+// prompt pasted into a box with something left in it reaches Claude as the two run together. Ctrl-U is what
+// empties it, and costs nothing on the empty box that is the ordinary case.
+const CLEAR_INPUT_LINE = "\u0015";
+// Ctrl-U kills the line the cursor is on, and that is one *visual* line: Claude word-wraps a prompt too long
+// for the width, and a single key then takes the last of those lines and leaves the rest sitting there. A box
+// is emptied by one key per line it has grown to, and since it is drawn on the screen it can never have grown
+// past the height of it -- so a screenful of them empties any box, in one write, every key past the last line
+// landing on an empty box where Ctrl-U does nothing.
+const CLEAR_INPUT_BOX = CLEAR_INPUT_LINE.repeat(TERMINAL_ROWS);
 const ESCAPE = "\u001b";
 const CARRIAGE_RETURN = "\r";
 const CONTROL_D = "\u0004";
@@ -396,8 +406,8 @@ export class ClaudeRuntime {
     try {
       this.pty = this.spawnPty(claudeBin, [...sessionArgs, ...selectionArgs(this.model, this.mode, this.effort), "--settings", settingsPath], {
         name: "xterm-256color",
-        cols: 120,
-        rows: 40,
+        cols: TERMINAL_COLS,
+        rows: TERMINAL_ROWS,
         cwd: this.cwd,
         env: process.env,
       });
@@ -780,6 +790,41 @@ export class ClaudeRuntime {
   }
 
   /**
+   * Empties Claude's input box so the paste that follows is the whole of what Claude reads.
+   *
+   * The box is not reliably empty when a prompt arrives. Interrupting a turn puts the prompt it
+   * interrupted back for editing, and a submit a cancel abandons between its paste and its Enter leaves
+   * that paste behind; Paseo interrupts before it replaces a turn, so both are one message away in any
+   * session the daemon is steering. What Claude then receives is the two run together as a single
+   * prompt nobody wrote, sent from before the turn the interrupt rewound.
+   *
+   * Emptying it takes a key per line rather than one key. Ctrl-U kills the visual line the cursor is on,
+   * so on residue Claude had wrapped it cuts at the wrap and leaves every line above -- which is not a
+   * box that failed to clear but a box holding the front of the old message, the half a reader is least
+   * likely to notice is not theirs. Measured against Claude Code v2.1.269 at this terminal size: a
+   * 193-character prompt wraps after 115, and one Ctrl-U leaves exactly those 115 characters behind.
+   *
+   * The keys go in whatever the screen says, because the screen is sampled and a paste too recent to
+   * have been rendered is exactly the residue worth clearing; the snapshot is read only to name it in
+   * the log, since a box that had anything in it is worth a line either way. That sampling is also why
+   * the box is not cleared a line at a time and read back between keys: the residue worth clearing is
+   * the one the screen cannot yet see, so the count cannot be taken from it, and a whole screenful is
+   * sent blind instead.
+   */
+  private clearInputBox(): void {
+    const held = inputBoxContent(this.screen.snapshot());
+    if (held) {
+      writeLog({
+        level: "warn",
+        message: "Cleared something out of Claude's input box before sending a prompt",
+        sessionId: this.sessionId,
+        held: held.slice(0, PROMPT_ECHO_CHARS),
+      });
+    }
+    this.pty?.write(CLEAR_INPUT_BOX);
+  }
+
+  /**
    * Puts the prompt in Claude's input box and sends it, and says so when it could not.
    *
    * Every way a turn ends is a hook Claude fires, so a prompt Claude never took ends nothing: the turn
@@ -789,6 +834,7 @@ export class ClaudeRuntime {
    */
   private async submit(text: string): Promise<void> {
     const activityBefore = this.activityAt;
+    this.clearInputBox();
     this.pty?.write(`${BRACKETED_PASTE_START}${text}${COMPLETION_DISMISS}${BRACKETED_PASTE_END}`);
     const echo = promptEcho(text);
     let pasted = await this.screenSettles((screen) => inputBoxHolds(screen, echo), PASTE_ECHO_MS);
@@ -1061,13 +1107,18 @@ function inputBoxVisible(screen: string): boolean {
 }
 
 // The last prompt marker on screen is Claude's input box; the ones above it are prompts it has already taken.
-function inputBoxHolds(screen: string, echo: string): boolean {
+// Null where the screen has no box on it at all, which says nothing about what Claude is holding.
+function inputBoxContent(screen: string): string | null {
   const lines = screen.split("\n");
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const match = /^\s*❯\s?(.*)$/.exec(lines[index]!);
-    if (match) return match[1]!.trim().startsWith(echo);
+    if (match) return match[1]!.trim();
   }
-  return false;
+  return null;
+}
+
+function inputBoxHolds(screen: string, echo: string): boolean {
+  return inputBoxContent(screen)?.startsWith(echo) ?? false;
 }
 
 // Registering a status line makes Claude drop most footer hints, `? for shortcuts` among them, so that alternative cannot match in an adapter-launched session.
