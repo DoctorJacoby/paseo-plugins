@@ -3,7 +3,7 @@
 Run the genuine interactive Claude Code CLI as a native Paseo agent.
 
 Paseo speaks [ACP](https://agentclientprotocol.com) to this adapter, and the adapter keeps a single real `claude` process in a PTY per session.
-It translates that process's transcripts and hooks into native Paseo messages, reasoning, tool calls, plans, permissions, models, modes, slash commands, attachments, cancellation, and history.
+It translates that process's transcripts and hooks into native Paseo messages, reasoning, tool calls, plans, permissions, models, modes, effort levels, slash commands, attachments, cancellation, and history.
 There is no `claude -p` and no Claude Agent SDK anywhere in the path.
 
 ## Why?
@@ -124,19 +124,26 @@ Reading it per suspension is what lets a change in that panel reach a session th
 
 A suspension waits for its session to be genuinely idle. It stands aside while a turn is running and while a permission or question card is still waiting for an answer — stopping Claude then would cancel the request behind that card and leave it on screen in Paseo answering to nothing — and a suspension that fails re-arms rather than giving up, because giving up once would keep that process alive for the rest of its life.
 
-## Models and modes
+## Models, modes and effort
 
 The model selector offers Claude Code's rolling aliases — `inherit`, `opus`, `fable`, `sonnet`, `haiku` — plus the full catalog that Paseo's native Claude provider exposes, including explicit releases and 1M-context variants.
 Claude Code has no supported way to list models without opening an interactive session, so that catalog is versioned with the adapter while the aliases keep following Claude's.
 
 The mode selector offers Default, Accept Edits, Plan, Auto, and Bypass Permissions.
 
+The effort selector offers Claude Code's own `--effort` levels — Low, Medium, High, Extra high and Max — ahead of a Default that passes no flag and leaves Claude at whatever its settings name.
+Paseo shows it as the session's thinking level.
+
 Bypass Permissions is last and named for what it does: nothing stops a command before it runs, which is why it is a mode a person picks per session rather than a default.
 Claude gates it behind a disclaimer it keeps once per host, so the first session that asks for the mode raises a card in Paseo carrying the same warning; accepting it answers Claude's dialog, declining it fails the session start rather than quietly running in another mode.
 Because Claude remembers the answer, the card appears once on a host and never again — including for the scheduled, unattended sessions the mode exists for.
 
-Changing either control before launch changes startup flags.
+Changing any of the three before launch changes startup flags.
 Changing one while idle restarts and resumes Claude with deterministic flags, and changing one during a turn is rejected.
+
+All three are published twice, because the two ACP bridges Paseo can run this adapter on read different fields.
+`session/new` answers with the older `models` and `modes` state *and* with `configOptions` carrying a `model` selector and a `thought_level` one, and the adapter serves both `session/set_model` and `session/set_config_option`.
+The daemon's own bridge prefers `models` and takes the effort levels only from the config options; the bridge a Paseo plugin provider runs on reads `configOptions` and nothing else, and would show an empty model picker without them.
 
 ## Prompt content
 
@@ -156,7 +163,7 @@ The daemon starts one adapter process per provider connection, and that process 
 Every session of that connection lives in that one process, and each session owns its own `claude` process in a PTY.
 
 A session starts empty: `session/new` returns an ID immediately and launches nothing, so a provider probe or an untouched draft never spawns Claude.
-The first prompt launches `claude --session-id <id>` and later launches reuse `claude --resume <id>`, with the model and mode selectors translated into `--model` and `--permission-mode`.
+The first prompt launches `claude --session-id <id>` and later launches reuse `claude --resume <id>`, with the model, mode and effort selectors translated into `--model`, `--permission-mode` and `--effort`.
 
 Every launch gets a private runtime directory holding a generated `settings.json` and hook client, passed with `--settings`, so the adapter registers its hooks and its status line without touching the user's Claude configuration.
 No global hooks are required; remove any legacy hooks left in `~/.claude/settings.json` after uninstalling the old panel plugin.
@@ -181,7 +188,7 @@ The adapter writes that text into the PTY wrapped in bracketed paste, waits brie
 The paste ends with a space so Claude's completion menu is closed rather than swallowing that Enter, and the adapter watches its input box on the headless screen and presses Enter again while the prompt is still sitting there, because Claude drops the key while it is settling a paste.
 
 Cancellation is the same kind of impersonation: an Escape keystroke, plus a short fallback that ends the turn when no `Stop` hook follows.
-Changing the model or mode while idle sends Ctrl-D, waits for the process to exit, and relaunches with `--resume`, which is why the change survives as a real flag rather than an in-band command.
+Changing the model, mode or effort while idle sends Ctrl-D, waits for the process to exit, and relaunches with `--resume`, which is why the change survives as a real flag rather than an in-band command.
 
 ### Output comes out of the transcript
 
@@ -251,7 +258,8 @@ The adapter runs a single loopback HTTP server whose URL carries a per-process s
 
 ### State on disk
 
-The state directory holds one JSON file per session, mapping the Paseo session ID to Claude's own session ID, cwd, model and mode, plus a lock file naming the process that has the session open.
+The state directory holds one JSON file per session, mapping the Paseo session ID to Claude's own session ID, cwd, model, mode and effort, plus a lock file naming the process that has the session open.
+A file written before the effort selector existed names none, which reads as the default effort.
 Runtime directories live in the host's temporary directory, record their owner PID, and are swept on the next adapter startup if that process is gone.
 
 ## Limitations

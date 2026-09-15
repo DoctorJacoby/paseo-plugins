@@ -1085,3 +1085,70 @@ test("stops counting a background command the session stopped, and goes on count
   assert.deepEqual(translator.outstandingBackgroundShells, []);
   assert.ok(translator.backgroundShellActivityAt >= launchedAt);
 });
+
+test("sends an edit's diff again with its result, rather than the line saying the file was updated", async () => {
+  const notifications: SessionNotification[] = [];
+  const connection = {
+    sessionUpdate: async (notification: SessionNotification) => {
+      notifications.push(notification);
+    },
+  } as unknown as AgentSideConnection;
+  const translator = new TranscriptTranslator("session", "/work/repo", connection);
+  const updated = (file: string) => [{ type: "text", text: `The file ${file} has been updated successfully.` }];
+
+  await translator.translate([
+    {
+      type: "assistant",
+      uuid: "assistant-1",
+      message: {
+        content: [
+          { type: "tool_use", id: "edit-1", name: "Edit", input: { file_path: "src/app.ts", old_string: "a", new_string: "b" } },
+          { type: "tool_use", id: "write-1", name: "Write", input: { file_path: "/tmp/notes.md", content: "# Notes" } },
+          { type: "tool_use", id: "edit-2", name: "Edit", input: { file_path: "src/gone.ts", old_string: "x", new_string: "y" } },
+          { type: "tool_use", id: "bash-1", name: "Bash", input: { command: "npm test" } },
+        ],
+      },
+    },
+    {
+      type: "user",
+      uuid: "results",
+      message: {
+        content: [
+          { type: "tool_result", tool_use_id: "edit-1", content: updated("/work/repo/src/app.ts") },
+          { type: "tool_result", tool_use_id: "write-1", content: updated("/tmp/notes.md") },
+          { type: "tool_result", tool_use_id: "edit-2", is_error: true, content: "<tool_use_error>String to replace not found in file.</tool_use_error>" },
+          { type: "tool_result", tool_use_id: "bash-1", content: [{ type: "text", text: "3 passing" }] },
+        ],
+      },
+    },
+  ]);
+
+  const result = (toolCallId: string) =>
+    notifications.find((notification) => notification.update.sessionUpdate === "tool_call_update" && notification.update.toolCallId === toolCallId)?.update;
+  assert.deepEqual(result("edit-1"), {
+    sessionUpdate: "tool_call_update",
+    toolCallId: "edit-1",
+    status: "completed",
+    rawOutput: updated("/work/repo/src/app.ts"),
+    content: [{ type: "diff", path: "/work/repo/src/app.ts", oldText: "a", newText: "b" }],
+  });
+  assert.deepEqual(result("write-1"), {
+    sessionUpdate: "tool_call_update",
+    toolCallId: "write-1",
+    status: "completed",
+    rawOutput: updated("/tmp/notes.md"),
+    content: [{ type: "diff", path: "/tmp/notes.md", newText: "# Notes" }],
+  });
+  // A failed edit keeps the diff it attempted too; what went wrong is in its raw output.
+  assert.deepEqual(result("edit-2"), {
+    sessionUpdate: "tool_call_update",
+    toolCallId: "edit-2",
+    status: "failed",
+    rawOutput: "<tool_use_error>String to replace not found in file.</tool_use_error>",
+    content: [{ type: "diff", path: "/work/repo/src/gone.ts", oldText: "x", newText: "y" }],
+  });
+  // Anything that is not an edit still shows what it produced.
+  const shell = result("bash-1");
+  assert.ok(shell?.sessionUpdate === "tool_call_update");
+  assert.deepEqual(shell.content, [{ type: "content", content: { type: "text", text: "3 passing" } }]);
+});

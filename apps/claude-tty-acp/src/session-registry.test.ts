@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { AgentSideConnection } from "@agentclientprotocol/sdk";
+import type { AgentSideConnection, SessionConfigOption } from "@agentclientprotocol/sdk";
 import { HookServer } from "./hook-server.ts";
 import { SessionRegistry } from "./session-registry.ts";
 import { StateStore } from "./state-store.ts";
@@ -92,3 +92,36 @@ test("opens a session left in a mode this adapter no longer offers", async () =>
     await rm(root, { force: true, recursive: true });
   }
 });
+
+test("reads an effort level back, and falls to the default for one it has no record of", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "session-registry-test-"));
+  const store = new StateStore(root);
+  const registry = new SessionRegistry(
+    { sessionUpdate: async () => undefined } as unknown as AgentSideConnection,
+    new HookServer(),
+    { claudeConfigDir: root },
+    store,
+  );
+  const saved = { version: 1, cwd: root, model: "inherit", mode: "default", lastActivity: 1 } as const;
+  const kept = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const unknown = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  // A file written before the effort selector existed carries none at all, which is the same reading as one this build does not offer.
+  const absent = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  try {
+    await store.save({ ...saved, acpSessionId: kept, claudeSessionId: kept, effort: "xhigh" });
+    await store.save({ ...saved, acpSessionId: unknown, claudeSessionId: unknown, effort: "effortFromALaterAdapter" });
+    await store.save({ ...saved, acpSessionId: absent, claudeSessionId: absent });
+
+    assert.equal(currentEffort(await registry.load(kept, root)), "xhigh");
+    assert.equal(currentEffort(await registry.load(unknown, root)), "inherit");
+    assert.equal(currentEffort(await registry.load(absent, root)), "inherit");
+  } finally {
+    await registry.clear();
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+function currentEffort(session: { configOptions: SessionConfigOption[] }): string | undefined {
+  const option = session.configOptions.find((entry) => entry.category === "thought_level");
+  return option?.type === "select" ? option.currentValue : undefined;
+}
