@@ -155,6 +155,18 @@ export async function readState(): Promise<StateReading> {
 }
 
 /**
+ * One session's state file. The provider reads it once a second for every open session, so it is
+ * read on its own rather than through the whole directory, and a session the adapter has not
+ * written one for yet is an answer rather than a failure.
+ */
+export async function readSessionEntry(stateDirectory: string, id: string): Promise<SessionEntry | null> {
+  const name = `${id}${SESSION_SUFFIX}`;
+  const contents = await readFile(path.join(sessionsDirectory(stateDirectory), name), "utf8").catch(() => null);
+  if (contents === null) return null;
+  return joinSessions([{ name, contents }], [], () => false)[0] ?? null;
+}
+
+/**
  * Titles are a courtesy: a daemon that stalls or pages forever costs them and nothing else. `complete`
  * says whether the last page was reached, for the callers that count rather than decorate.
  */

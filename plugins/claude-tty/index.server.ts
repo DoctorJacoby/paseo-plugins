@@ -7,14 +7,12 @@ import {
   doctorHandler,
   lastDoctorHandler,
   quarantineSessionHandler,
-  readSubagentHandler,
   releaseLockHandler,
   releaseStaleLocksHandler,
   removeStateHandler,
   sessionsHandler,
   statusHandler,
   stopSessionHandler,
-  subagentsHandler,
 } from "./server/handlers.ts";
 
 export default function contribute(server: PluginServerContext) {
@@ -36,8 +34,6 @@ export default function contribute(server: PluginServerContext) {
   server.handle(contracts.releaseLock, (input, { paseo }) => releaseLockHandler(paseo, input));
   server.handle(contracts.quarantineSession, (input, { paseo }) => quarantineSessionHandler(paseo, input));
   server.handle(contracts.stopSession, (input, { paseo }) => stopSessionHandler(paseo, input));
-  server.handle(contracts.getSubagents, () => subagentsHandler());
-  server.handle(contracts.readSubagent, (input) => readSubagentHandler(input));
   server.handle(contracts.releaseStaleLocks, (_input, { paseo }) => releaseStaleLocksHandler(paseo));
   server.handle(contracts.removeState, () => removeStateHandler());
 

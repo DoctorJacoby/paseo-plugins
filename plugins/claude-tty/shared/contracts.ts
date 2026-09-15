@@ -128,67 +128,6 @@ export const releaseStaleLocks = defineRpc({
   output: SessionsSchema,
 });
 
-export const SubagentSchema = z.object({
-  agentId: z.string(),
-  /** What the session asked for, or the opening line of the prompt when the launch is long gone. */
-  description: z.string().nullable(),
-  status: z.enum(["running", "completed", "failed", "unknown"]),
-  summary: z.string().nullable(),
-  /** Launched by another subagent, so the session's own transcript never mentions it. */
-  nested: z.boolean(),
-  lastActivity: z.number().nullable(),
-});
-
-export const SubagentSessionSchema = z.object({
-  sessionId: z.string(),
-  cwd: z.string().nullable(),
-  subagents: z.array(SubagentSchema),
-});
-
-export const SubagentsSchema = z.object({
-  now: z.number(),
-  problem: z.string().nullable(),
-  sessions: z.array(SubagentSessionSchema),
-});
-
-export type SubagentsPayload = z.output<typeof SubagentsSchema>;
-
-export const getSubagents = defineRpc({
-  name: "claude-tty.subagents.list",
-  input: z.object({}),
-  output: SubagentsSchema,
-});
-
-export const SubagentStepSchema = z.object({
-  kind: z.enum(["text", "tool"]),
-  /** When it happened, against the daemon's clock, like every other time in this payload. */
-  at: z.number().nullable(),
-  /** What the subagent said, or the name of the tool it called. */
-  title: z.string(),
-  /** What the tool was asked to do, in the subagent's own words. */
-  detail: z.string().nullable(),
-  /** The argument worth reading as it was written: a command, a path, a pattern. */
-  body: z.string().nullable(),
-  failed: z.boolean(),
-  error: z.string().nullable(),
-});
-
-export const SubagentTranscriptSchema = z.object({
-  /** The first thing in the transcript, so a step can say how far into the run it happened. */
-  startedAt: z.number().nullable(),
-  steps: z.array(SubagentStepSchema),
-  /** Steps older than the ones returned, which are on disk but not worth sending. */
-  earlier: z.number(),
-});
-
-export type SubagentTranscriptPayload = z.output<typeof SubagentTranscriptSchema>;
-
-export const readSubagent = defineRpc({
-  name: "claude-tty.subagents.read",
-  input: z.object({ sessionId: z.string(), agentId: z.string() }),
-  output: SubagentTranscriptSchema,
-});
-
 /** Removing the state directory either happens or throws, so what comes back is only what it did. */
 export const RemoveStateSchema = z.object({ detail: z.string() });
 

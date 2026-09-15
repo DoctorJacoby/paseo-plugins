@@ -6,7 +6,11 @@ The plugin registers the provider itself and runs the adapter it was installed b
 
 Owning the provider is also what lets Claude's own interactions use Paseo's cards for them. A question Claude asks becomes one question form holding every question at once — radio buttons, checkboxes where Claude allows several answers, and a box for an answer that is on none of the lists — and a plan becomes a plan card with Implement and Reject. Both are answerable from a terminal too: `paseo permit allow <agent> <id> --input '{"answers":{"Runtime":"Node"}}'` answers a whole form, keyed by the label each question shows.
 
+Owning it is also what lets a subagent be more than a card. An agent a session launches opens as a **subsession** of the Paseo agent that launched it, with a timeline of its own: what it was asked to do, what it said, and every tool call it made, with the file it read, the command it ran and the reason anything failed — not the bounded tail the launching card has room for. A subsession takes no prompts, because the subagent behind it takes none: it answers to the one prompt its launcher handed it. It closes when the launch that started it does, which is also what a session whose Claude process stopped reports, so nothing goes on saying it is working after the process running it has gone.
+
 Owning it is what gives a session its own pickers, too. The model list is Claude Code's rolling aliases and the releases behind them, and beside it is a **thinking** picker carrying Claude Code's effort levels, which claude-tty had no way to offer before. Either can be changed while a session is idle: the adapter restarts Claude on the same conversation with the new flag, so the choice is a real one rather than a message typed into the box.
+
+An agent another agent launched has no subsession of its own: the session's conversation never mentions one, so nothing there says when it stopped, and its steps stay on its spawner's card the way they always did. The card is also all there is on a daemon that does not negotiate `session.subsession`, where nothing is emitted at all.
 
 ## Screenshots
 
@@ -69,10 +73,6 @@ An agent whose toggle you switch keeps that value, across suspensions and restar
 **Diagnostics** runs the adapter's own host checks — Claude on the daemon's `PATH` above all. Paseo drops the adapter's stderr, so running them is the only way to read them; what Paseo itself makes of the provider is in the provider list and in `paseo plugin logs claude-tty`.
 
 **Sessions** lists the adapter's saved sessions and the locks over them, each named after the Paseo agent holding it and saying when it was last prompted. That reads "last prompted" rather than "active" on purpose: the adapter stamps the time as a prompt starts, so a session an hour into one turn is still working. **Open** reveals the agent holding a session, and is there for as long as Paseo still lists one.
-
-**Subagents** lists the subagents of every open session — what each was asked to do, whether it is running, and when it last did anything — and opens one to show the steps it has taken: how far into the run each happened, what it said, the command or path each tool call was handed, and the reason any of them failed. Only open sessions are listed, because a subagent runs inside its session's Claude process and stops with it. A subagent whose launch has since been compacted out of the session's transcript is still listed, named after the opening line of its prompt.
-
-The same work also streams into the tool call that launched it, in the conversation itself, which is where to watch one as it runs. It cannot be opened as a tab of its own: a subagent is not an ACP session or a Paseo agent but a loop inside the one Claude process, so there is nothing for Paseo to open — which is why the sessions beside it get an **Open** button and these do not.
 
 **Stop** ends the adapter process holding an open session, which closes its Claude terminal. Nothing durable goes with it: the session file, the transcript, and the Paseo agent all survive, and the next prompt resumes the same Claude session.
 
