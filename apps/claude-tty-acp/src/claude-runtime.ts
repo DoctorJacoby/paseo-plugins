@@ -12,6 +12,7 @@ import { writeLog } from "./log.ts";
 import { cleanupPromptFiles, materializePrompt } from "./prompt-content.ts";
 import { markRuntimeDirectory, runtimePrefix } from "./runtime-directories.ts";
 import { INHERIT_EFFORT_ID, INHERIT_MODEL_ID } from "./session-options.ts";
+import { claudeIsWaitingFor } from "./session-status.ts";
 import { TERMINAL_COLS, TERMINAL_ROWS, TerminalScreen } from "./terminal-screen.ts";
 import { SubagentWatcher } from "./subagent-watcher.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
@@ -51,6 +52,11 @@ const PASTE_ECHO_MS = 300;
 // before it lands leaves that prompt sitting there unsent, with no hook to end the turn waiting on it.
 const LATE_PASTE_MS = 2_000;
 const PROMPT_ECHO_CHARS = 40;
+// How many times the keyboard is asked back off a question Claude has open, and how long each key is given
+// to take effect. Bounded rather than patient: a question Escape does not close is one this cannot answer,
+// and a prompt that fails saying so is worth more than one that goes on pressing keys into it.
+const DIALOG_DISMISS_ATTEMPTS = 3;
+const DIALOG_DISMISS_MS = 500;
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
 // Claude keeps its completion menu open while the cursor sits at the end of an @mention or a /command, and the submit key then picks an entry instead of sending the prompt.
@@ -116,6 +122,7 @@ export type RuntimeDependencies = {
   contextRefreshTimeoutMs?: number;
   submitDelayMs?: number;
   latePasteMs?: number;
+  dialogDismissMs?: number;
   transcriptPollIntervalMs?: number;
   workspaceTrustKeyDelayMs?: number;
   workspaceTrustSelectionTimeoutMs?: number;
@@ -158,6 +165,7 @@ export class ClaudeRuntime {
   private readonly contextRefreshTimeoutMs: number;
   private readonly submitDelayMs: number;
   private readonly latePasteMs: number;
+  private readonly dialogDismissMs: number;
   private readonly transcriptPollIntervalMs: number | undefined;
   private readonly workspaceTrustKeyDelayMs: number;
   private readonly workspaceTrustSelectionTimeoutMs: number;
@@ -234,6 +242,7 @@ export class ClaudeRuntime {
     this.contextRefreshTimeoutMs = dependencies.contextRefreshTimeoutMs ?? CONTEXT_REFRESH_TIMEOUT_MS;
     this.submitDelayMs = dependencies.submitDelayMs ?? SUBMIT_DELAY_MS;
     this.latePasteMs = dependencies.latePasteMs ?? LATE_PASTE_MS;
+    this.dialogDismissMs = dependencies.dialogDismissMs ?? DIALOG_DISMISS_MS;
     this.transcriptPollIntervalMs = dependencies.transcriptPollIntervalMs;
     this.workspaceTrustKeyDelayMs = dependencies.workspaceTrustKeyDelayMs ?? WORKSPACE_TRUST_KEY_DELAY_MS;
     this.workspaceTrustSelectionTimeoutMs = dependencies.workspaceTrustSelectionTimeoutMs ?? WORKSPACE_TRUST_SELECTION_TIMEOUT_MS;
@@ -846,13 +855,30 @@ export class ClaudeRuntime {
    */
   private async submit(text: string): Promise<void> {
     const activityBefore = this.activityAt;
-    this.clearInputBox();
-    this.pty?.write(`${BRACKETED_PASTE_START}${text}${COMPLETION_DISMISS}${BRACKETED_PASTE_END}`);
     const echo = promptEcho(text);
+    const paste = (): void => {
+      this.clearInputBox();
+      this.pty?.write(`${BRACKETED_PASTE_START}${text}${COMPLETION_DISMISS}${BRACKETED_PASTE_END}`);
+    };
+    if ((await this.takeTheKeyboardBack(activityBefore)) === "delivered") return;
+    paste();
     let pasted = await this.screenSettles((screen) => inputBoxHolds(screen, echo), PASTE_ECHO_MS);
     for (let attempt = 0; attempt < SUBMIT_ATTEMPTS; attempt += 1) {
       await delay(this.submitDelayMs);
       if (this.cancelRequested) return;
+      // A question can open between the paste and this key, and the key would answer it. Only asked after
+      // a box that is not visibly holding the prompt, because a box that is holding it has the keys.
+      if (!pasted) {
+        const keyboard = await this.takeTheKeyboardBack(activityBefore);
+        if (keyboard === "delivered") return;
+        if (keyboard === "dismissed") {
+          // The paste went into the question rather than into the box, so it goes again now the box has
+          // the keys back; Claude has nothing of this prompt yet, and the key below would send an empty box.
+          paste();
+          pasted = await this.screenSettles((screen) => inputBoxHolds(screen, echo), PASTE_ECHO_MS);
+          continue;
+        }
+      }
       this.pty?.write(CARRIAGE_RETURN);
       if (pasted) {
         if (await this.screenSettles((screen) => !inputBoxHolds(screen, echo), SUBMIT_CONFIRM_MS)) return;
@@ -871,6 +897,47 @@ export class ClaudeRuntime {
     }
     if (this.submissionMovedOn(activityBefore)) return;
     throw new Error(`Claude kept the prompt for session ${this.sessionId} in its input box after ${SUBMIT_ATTEMPTS} submit attempts.`);
+  }
+
+  /**
+   * Gets the keyboard back off anything Claude has open, so the prompt goes to the input box or nowhere.
+   *
+   * A question Claude opens takes the box's place and marks its selected row with the same ❯, so every
+   * reading the screen offers says a box is there holding a prompt nobody sent -- and what this would then
+   * do to it is worse than a message not delivered. The screenful of Ctrl-U that empties a box walks the
+   * selection, the space that closes Claude's completion menu toggles the checkbox under it, and the submit
+   * key confirms whatever is left selected. Two sessions answered Claude Code v2.1.269's auto-mode setup
+   * question that way by themselves, the same row logged as `[✔]` in one and `[ ]` nineteen minutes later.
+   *
+   * So the question is closed rather than typed over. Escape is what closes one and costs nothing anywhere
+   * else -- on an idle input box it does not even clear the text -- and what makes it safe to send without
+   * knowing which question is up is that Claude's own state says whether it worked. Nothing is assumed: the
+   * key goes, the state is read back, and a question that will not close fails the prompt instead.
+   *
+   * `delivered` where the prompt turns out to have gone in already, because a question Claude opened
+   * *because of* it is the turn running rather than a turn to fail.
+   */
+  private async takeTheKeyboardBack(activityBefore: number): Promise<"clear" | "dismissed" | "delivered"> {
+    const waitingFor = await claudeIsWaitingFor(this.pty?.pid, this.claudeConfigDir);
+    if (waitingFor === null) return "clear";
+    if (this.submissionMovedOn(activityBefore)) return "delivered";
+    for (let attempt = 0; attempt < DIALOG_DISMISS_ATTEMPTS; attempt += 1) {
+      this.pty?.write(ESCAPE);
+      const deadline = Date.now() + this.dialogDismissMs;
+      do {
+        await delay(STARTUP_POLL_INTERVAL_MS);
+        if ((await claudeIsWaitingFor(this.pty?.pid, this.claudeConfigDir)) === null) {
+          writeLog({ level: "warn", message: "Closed something Claude had open, to get the keyboard back for a prompt", sessionId: this.sessionId, waitingFor });
+          return "dismissed";
+        }
+      } while (Date.now() < deadline);
+    }
+    // Nothing outside this process can reach the PTY -- the adapter implements no ACP terminal and Paseo's
+    // own terminals are workspace shells -- so a question Escape will not close is one nobody can answer
+    // from the client. Saying which, with the screen it is on, is the whole of what can be offered.
+    throw new Error(
+      `Claude is waiting on ${waitingFor} in session ${this.sessionId} and did not let go of it. The prompt was not sent, because the keys that would have sent it would have answered that instead. Restarting Claude clears it -- changing the session's model or thinking level does that on the same conversation. Terminal output:\n${this.screen.snapshot()}`,
+    );
   }
 
   /**
