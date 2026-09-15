@@ -4,6 +4,8 @@ Adds **Claude TTY** to Paseo's provider list: the genuine interactive Claude Cod
 
 The plugin registers the provider itself and runs the adapter it was installed beside, so there is no provider entry to write into the daemon configuration and nothing to reload. It also diagnoses the adapter and manages its saved sessions from Paseo's sidebar, on whichever host is selected.
 
+Owning the provider is also what lets Claude's own interactions use Paseo's cards for them. A question Claude asks becomes one question form holding every question at once — radio buttons, checkboxes where Claude allows several answers, and a box for an answer that is on none of the lists — and a plan becomes a plan card with Implement and Reject. Both are answerable from a terminal too: `paseo permit allow <agent> <id> --input '{"answers":{"Runtime":"Node"}}'` answers a whole form, keyed by the label each question shows.
+
 Owning it is what gives a session its own pickers, too. The model list is Claude Code's rolling aliases and the releases behind them, and beside it is a **thinking** picker carrying Claude Code's effort levels, which claude-tty had no way to offer before. Either can be changed while a session is idle: the adapter restarts Claude on the same conversation with the new flag, so the choice is a real one rather than a message typed into the box.
 
 ## Screenshots

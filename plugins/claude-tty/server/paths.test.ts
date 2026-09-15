@@ -47,11 +47,13 @@ test("finds the settings file an older install kept in the cache directory", () 
   assert.equal(legacySettingsFilePath({ HOME: "/home/paseo" }), "/home/paseo/.cache/paseo-plugins/claude-tty/settings.json");
 });
 
-test("spawns the adapter with the settings document it is to read", () => {
-  assert.deepEqual(adapterCommand("/opt/paseo-plugins", { PASEO_HOME: "/srv/paseo" }), [
+test("spawns the adapter with the two paths it cannot work out for itself", () => {
+  assert.deepEqual(adapterCommand("/opt/paseo-plugins", { PASEO_HOME: "/srv/paseo", HOME: "/home/paseo" }), [
     "/opt/paseo-plugins/apps/claude-tty-acp/bin/claude-tty-acp",
     "--settings-file",
     "/srv/paseo/plugin-settings/claude-tty/settings.json",
+    "--answers-dir",
+    "/home/paseo/.local/state/claude-tty-acp/card-answers",
   ]);
 });
 

@@ -3,7 +3,8 @@ import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
 import { PROVIDER_ID, PROVIDER_LABEL } from "../shared/provider.ts";
 import { resolveRepoRoot } from "./checkout.ts";
-import { adapterCommand, adapterEntryPath } from "./paths.ts";
+import { adapterCommand, adapterEntryPath, cardAnswersDirectory, defaultStateDirectory } from "./paths.ts";
+import { withPermissionCards } from "./permission-bridge.ts";
 import { withSteerFallback } from "./steering.ts";
 import { toolCallDetails } from "./tool-details.ts";
 
@@ -77,9 +78,12 @@ export function claudeTtyProvider(): ProviderRegistration {
         acpOptions: { waitForInitialCommands: true, initialCommandsTimeoutMs: INITIAL_COMMANDS_TIMEOUT_MS },
         transformers: [details.transformer],
       }).connect(request);
-      // The steer fallback goes innermost, because it stands in for the bridge, so the cards wrap a
-      // connection that already answers a steer.
-      return details.wrap(withSteerFallback(connection, request.capabilities));
+      // The steer fallback goes innermost, because it stands in for the bridge. The cards go next, so
+      // the wrapper outside reads tool calls that already say what they were.
+      return withPermissionCards(
+        details.wrap(withSteerFallback(connection, request.capabilities)),
+        cardAnswersDirectory(defaultStateDirectory()),
+      );
     },
   };
 }

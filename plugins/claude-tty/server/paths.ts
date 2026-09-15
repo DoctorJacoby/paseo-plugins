@@ -11,6 +11,9 @@ export const ADAPTER_ENTRY_NAME = "cli.js";
 /** How the adapter is told which settings document to read; its own `parseCliArgs` names the flag. */
 export const ADAPTER_SETTINGS_FLAG = "--settings-file";
 
+/** How it is told where the answers a question card collected are left; the same `parseCliArgs` names it. */
+export const ADAPTER_ANSWERS_FLAG = "--answers-dir";
+
 /** Mirrors the daemon's own `resolvePaseoHome`, whose `PASEO_HOME` the plugin process inherits. */
 export function paseoHome(env: Env = process.env): string {
   const home = env.PASEO_HOME?.trim() || "~/.paseo";
@@ -62,6 +65,15 @@ export function locksDirectory(stateDirectory: string): string {
   return path.join(stateDirectory, "locks");
 }
 
+/**
+ * Where a question card's answers wait for the adapter to read them. It sits in the adapter's own
+ * state directory rather than the daemon's settings store, which the daemon owns, and the path is
+ * passed at spawn rather than recomputed there, so the two sides cannot disagree about it.
+ */
+export function cardAnswersDirectory(stateDirectory: string): string {
+  return path.join(stateDirectory, "card-answers");
+}
+
 /** Mirrors the adapter's own `claudeConfigDir`, which decides where Claude keeps its transcripts. */
 export function claudeConfigDirectory(env: Env = process.env): string {
   const configured = env.CLAUDE_CONFIG_DIR?.trim();
@@ -110,7 +122,13 @@ export function adapterEntryPath(repoRoot: string): string {
  * what lets a change reach sessions that are already connected.
  */
 export function adapterCommand(repoRoot: string, env: Env = process.env): [string, ...string[]] {
-  return [adapterBinaryPath(repoRoot), ADAPTER_SETTINGS_FLAG, settingsFilePath(env)];
+  return [
+    adapterBinaryPath(repoRoot),
+    ADAPTER_SETTINGS_FLAG,
+    settingsFilePath(env),
+    ADAPTER_ANSWERS_FLAG,
+    cardAnswersDirectory(defaultStateDirectory(env)),
+  ];
 }
 
 /** Where a bare command name would be found, in the order a shell would try. */

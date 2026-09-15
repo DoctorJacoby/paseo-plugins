@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import type { AgentSideConnection, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
+import { answersFileName, useAnswersDirectory } from "./card-answers.ts";
 import { InteractionBridge } from "./interactions.ts";
+
+const answersDirectory = await mkdtemp(path.join(os.tmpdir(), "claude-tty-acp-answers-"));
+useAnswersDirectory(answersDirectory);
 
 function connectionWith(
   handler: (request: RequestPermissionRequest) => Promise<RequestPermissionResponse>,
@@ -11,6 +18,11 @@ function connectionWith(
 
 function selected(optionId: string): RequestPermissionResponse {
   return { outcome: { outcome: "selected", optionId } };
+}
+
+/** What the plugin leaves behind before it forwards a response Paseo's question form filled in. */
+async function handOff(cardId: string, answers: Record<string, string>): Promise<void> {
+  await writeFile(path.join(answersDirectory, answersFileName(cardId)), JSON.stringify({ answers }));
 }
 
 test("correlates ordinary permissions and returns exact durable suggestions", async () => {
@@ -105,35 +117,25 @@ test("still puts questions and plans in front of a person while auto-accept is o
 
   assert.deepEqual(
     requests.map((request) => request.toolCall.title),
-    ["Approve Claude's plan", "Pick"],
+    ["ExitPlanMode", "AskUserQuestion"],
   );
   assert.equal((planResponse.hookSpecificOutput as { decision: { behavior: string } }).decision.behavior, "deny");
 });
 
-test("uses affirmative chooser actions for question answers", async () => {
+test("raises one card for every question a tool call asks, and answers them all at once", async () => {
   const requests: RequestPermissionRequest[] = [];
-  const answers = ["answer-1", "answer-0", "answer-1", "done"];
   const bridge = new InteractionBridge(
     "session",
     "/work/repo",
     connectionWith(async (request) => {
       requests.push(request);
-      return selected(answers.shift()!);
+      await handOff("question-tool-questions", { "Choose runtime": "Bun", "Choose checks": "Types, Tests" });
+      return selected("submit");
     }),
   );
   const questions = [
-    {
-      question: "Choose runtime",
-      header: "Runtime",
-      options: [{ label: "Node" }, { label: "Bun" }],
-      multiSelect: false,
-    },
-    {
-      question: "Choose checks",
-      header: "Checks",
-      options: [{ label: "Types" }, { label: "Tests" }],
-      multiSelect: true,
-    },
+    { question: "Choose runtime", header: "Runtime", options: [{ label: "Node" }, { label: "Bun" }], multiSelect: false },
+    { question: "Choose checks", header: "Checks", options: [{ label: "Types" }, { label: "Tests" }], multiSelect: true },
   ];
   const response = await bridge.handlePreToolUse({
     hook_event_name: "PreToolUse",
@@ -143,33 +145,72 @@ test("uses affirmative chooser actions for question answers", async () => {
     tool_input: { questions },
   });
 
-  assert.ok(
-    requests.every((request) =>
-      request.options.every((option) => option.kind === (option.optionId === "reply-next" ? "reject_once" : "allow_once")),
-    ),
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.toolCall.toolCallId, "question-tool-questions");
+  // The plugin matches on the name the bridge reads off the title, and republishes the whole input as its card.
+  assert.equal(requests[0]?.toolCall.title, "AskUserQuestion");
+  assert.deepEqual(requests[0]?.toolCall.rawInput, { questions });
+  // Several questions leave no single option that answers them, so only the two that always mean something remain.
+  assert.deepEqual(
+    requests[0]?.options.map((option) => [option.optionId, option.kind]),
+    [
+      ["submit", "allow_once"],
+      ["reply-in-chat", "reject_once"],
+    ],
   );
   assert.deepEqual(response, {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "allow",
-      updatedInput: {
-        questions,
-        answers: { "Choose runtime": "Bun", "Choose checks": "Types, Tests" },
-      },
+      updatedInput: { questions, answers: { "Choose runtime": "Bun", "Choose checks": "Types, Tests" } },
     },
   });
 });
 
-test("falls back to a conversational answer and approves plans natively", async () => {
-  const responses = [selected("answer-0"), selected("reply-next"), selected("answer-0"), selected("approve-plan")];
+test("offers one option per answer while a single question is on the card", async () => {
+  const requests: RequestPermissionRequest[] = [];
   const bridge = new InteractionBridge(
     "session",
     "/work/repo",
-    connectionWith(async () => responses.shift()!),
+    connectionWith(async (request) => {
+      requests.push(request);
+      return selected("answer-0-1");
+    }),
+  );
+  const questions = [{ question: "Choose runtime", header: "Runtime", options: [{ label: "Node" }, { label: "Bun" }] }];
+  const response = await bridge.handlePreToolUse({
+    hook_event_name: "PreToolUse",
+    session_id: "session",
+    tool_use_id: "question-tool",
+    tool_name: "AskUserQuestion",
+    tool_input: { questions },
+  });
+
+  // Submit stays first: a client that allows without naming an action resolves the first affirmative one,
+  // and that has to be the option that carries no answer of its own.
+  assert.deepEqual(requests[0]?.options.map((option) => option.optionId), ["submit", "answer-0-0", "answer-0-1", "reply-in-chat"]);
+  assert.deepEqual(requests[0]?.options.map((option) => option.name), ["Submit answers", "Node", "Bun", "Answer in chat"]);
+  assert.deepEqual(response, {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: { questions, answers: { "Choose runtime": "Bun" } },
+    },
+  });
+});
+
+test("leaves the questions nobody answered to be asked in chat", async () => {
+  const bridge = new InteractionBridge(
+    "session",
+    "/work/repo",
+    connectionWith(async () => {
+      await handOff("partial-questions", { "Name?": "Alice", "Proceed?": "Yes" });
+      return selected("submit");
+    }),
   );
   const question = await bridge.handlePreToolUse({
     tool_name: "AskUserQuestion",
-    tool_use_id: "question",
+    tool_use_id: "partial",
     tool_input: {
       questions: [
         { question: "Name?", options: [{ label: "Alice" }] },
@@ -183,55 +224,53 @@ test("falls back to a conversational answer and approves plans natively", async 
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
       permissionDecisionReason:
-        'The user chose to answer some questions in chat. Keep these completed answers: {"Name?":"Alice","Proceed?":"Yes"}. Ask only these deferred questions: ["Notes?"]. Restate the deferred questions conversationally in one message, then end this turn and wait for the user\'s response.',
+        'The user left these questions to be asked in chat. Keep these completed answers: {"Name?":"Alice","Proceed?":"Yes"}. Ask only these deferred questions: ["Notes?"]. Restate the deferred questions conversationally in one message, then end this turn and wait for the user\'s response.',
     },
-  });
-
-  const input = { plan: "1. Implement\n2. Verify", allowedPrompts: [] };
-  const plan = await bridge.handlePreToolUse({ tool_name: "ExitPlanMode", tool_use_id: "plan", tool_input: input });
-  assert.deepEqual(plan, {
-    hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: input },
   });
 });
 
-test("renders question permission cards as readable text instead of raw JSON", async () => {
+test("falls back to chat for a card nobody answered", async () => {
+  const responses = [selected("reply-in-chat"), selected("submit"), { outcome: { outcome: "cancelled" } } as RequestPermissionResponse];
+  const bridge = new InteractionBridge("session", "/work/repo", connectionWith(async () => responses.shift()!));
+  const input = { questions: [{ question: "Which way?", header: "Way", options: [{ label: "Left" }] }] };
+  const reason =
+    'The user left these questions to be asked in chat. Ask only these deferred questions: ["Which way?"]. Restate the deferred questions conversationally in one message, then end this turn and wait for the user\'s response.';
+
+  for (const toolUseId of ["chat", "empty", "cancelled"]) {
+    const response = await bridge.handlePreToolUse({ tool_name: "AskUserQuestion", tool_use_id: toolUseId, tool_input: input });
+    assert.deepEqual(response, {
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
+    });
+  }
+});
+
+test("approves a plan on Paseo's own vocabulary", async () => {
   const requests: RequestPermissionRequest[] = [];
+  const responses = [selected("implement"), selected("reject")];
   const bridge = new InteractionBridge(
     "session",
     "/work/repo",
     connectionWith(async (request) => {
       requests.push(request);
-      return selected("answer-1");
+      return responses.shift()!;
     }),
   );
-  const question = {
-    question: "Choose runtime",
-    header: "Runtime",
-    options: [
-      { label: "Node", description: "Use the established runtime" },
-      { label: "Bun", description: "Use the faster alternative" },
-    ],
-    multiSelect: false,
-  };
+  const input = { plan: "1. Implement\n2. Verify", allowedPrompts: [] };
 
-  await bridge.handlePreToolUse({
-    hook_event_name: "PreToolUse",
-    session_id: "session",
-    tool_use_id: "question-tool",
-    tool_name: "AskUserQuestion",
-    tool_input: { questions: [question] },
+  assert.deepEqual(await bridge.handlePreToolUse({ tool_name: "ExitPlanMode", tool_use_id: "plan", tool_input: input }), {
+    hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: input },
   });
+  assert.equal(requests[0]?.toolCall.title, "ExitPlanMode");
+  assert.deepEqual(requests[0]?.toolCall.rawInput, input);
+  assert.deepEqual(requests[0]?.options.map((option) => option.optionId), ["implement", "reject"]);
 
-  assert.deepEqual(requests[0]?.toolCall.rawInput, question);
-  assert.deepEqual(requests[0]?.toolCall.content, [
-    {
-      type: "content",
-      content: {
-        type: "text",
-        text: "Choose runtime\n\n- Node — Use the established runtime\n- Bun — Use the faster alternative",
-      },
+  assert.deepEqual(await bridge.handlePreToolUse({ tool_name: "ExitPlanMode", tool_use_id: "plan-2", tool_input: input }), {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: "The user did not approve leaving plan mode.",
     },
-  ]);
+  });
 });
 
 test("cancels outstanding hook waits when the turn ends", async () => {
@@ -280,7 +319,7 @@ test("answers the permission pipeline from the question card the killed PreToolU
   // Claude killed that hook at its timeout and fell through to its permission pipeline for the same call.
   const permission = bridge.handlePermissionRequest({ tool_name: "AskUserQuestion", tool_input: { questions } });
   await waitFor(() => answer !== null);
-  answer!(selected("answer-1"));
+  answer!(selected("answer-0-1"));
 
   assert.deepEqual(await permission, {
     hookSpecificOutput: {
@@ -296,7 +335,7 @@ test("answers the permission pipeline from the question card the killed PreToolU
     },
   });
   assert.equal(requests.length, 1);
-  assert.equal(requests[0]?.toolCall.toolCallId, "question-tool-question-0-0");
+  assert.equal(requests[0]?.toolCall.toolCallId, "question-tool-questions");
 });
 
 test("renders a question the permission pipeline asks about on its own", async () => {
@@ -306,13 +345,13 @@ test("renders a question the permission pipeline asks about on its own", async (
     "/work/repo",
     connectionWith(async (request) => {
       requests.push(request);
-      return selected("answer-0");
+      return selected("answer-0-0");
     }),
   );
   const questions = [{ question: "Proceed?", options: [{ label: "Yes" }] }];
   const response = await bridge.handlePermissionRequest({ tool_name: "AskUserQuestion", tool_input: { questions } });
 
-  assert.deepEqual(requests[0]?.toolCall.rawInput, questions[0]);
+  assert.deepEqual(requests[0]?.toolCall.rawInput, { questions });
   assert.deepEqual(response, {
     hookSpecificOutput: {
       hookEventName: "PermissionRequest",

@@ -125,6 +125,31 @@ No `settings.changed` goes out for it, which only a screen opened within millise
 It is written to a temporary file and `link`ed into place rather than renamed, because `link` refuses an existing target and a value saved in Paseo in the meantime must win.
 The old file is deleted once the host has a document, whoever wrote it, so a reinstall — which deletes the document and starts from defaults — cannot bring a stale value back; it is kept only when writing failed, for the next start to try again.
 
+## The cards Paseo has for a question, and the answers ACP will not carry
+
+`runAcpProvider` builds every permission the same way: `kind: "tool"`, the tool call's title, its raw input, and one action per ACP option.
+`description`, `detail`, `metadata`, `variant` and `intent` have nowhere to come from, and on the way back `respondToPermission` resolves the ACP request with the id of the option it matched and drops the rest of the response — `updatedInput` included.
+So `server/permission-bridge.ts` wraps the connection that shim returns: it rebuilds the two permissions that ask a person something on the way out, and takes the answers off the response on the way in.
+The version of ACP this SDK speaks has no field for a tool's own name, so the adapter's `toolCall.title` carries it and the bridge reports it as the permission's `name`, which is what `server/question-cards.ts` matches on.
+
+Paseo's question form is the whole reason the card is worth rebuilding, and its contract is strict (read out of the web UI the daemon serves, `dist/server/web-ui`).
+It renders `request.input.questions`, and every question needs a string `question` and a string `header` and options that are objects with a string `label`; anything else makes `parseQuestionFormQuestions` return null, and the card then draws *nothing* and the permission cannot be answered there at all.
+`multiSelect` picks checkboxes over radio buttons, `allowOther` adds the free-text box Claude's own schema says the host provides, an option's `description` renders under its label, and there is no surface for an option's `preview` — which is why a preview is folded into that description rather than dropped.
+The form ignores `actions` entirely and keys its answers by `header`, so the headers are made distinct before they go out and the answers are read back onto the question text after, the way the daemon's own Claude provider does it.
+
+Submit sends `{ behavior: "allow", updatedInput: { ...input, answers } }` and names no action, and the ACP bridge then resolves the *first* option whose behaviour matches.
+That is why `submit` is first among the affirmative options and carries no answer of its own: it is what a bare allow — from that form, from `paseo permit allow`, from any client with a single Allow button — has to land on.
+Dismiss sends a plain deny, which lands on `reply-in-chat` the same way.
+
+The answers themselves travel by file, because nothing on the ACP connection would carry them: the bridge writes them under the directory the adapter is passed as `--answers-dir` and *then* forwards the response, so the adapter reading none means nobody answered rather than that it read too early.
+Everything else answers with an option alone: one per possible answer while a single question is on the card, and only "Answer in chat" once there are several, since no one button can answer them all.
+`paseo permit ls` shows the request's name and description, which is why the description summarises every question and its options, and `paseo permit allow <agent> <id> --input '{"answers":{...}}'` answers the whole card from a terminal — verified against a 0.8.0 daemon with a throwaway plugin, which is also where the `kind: "question"` and `kind: "plan"` requests below were checked end to end.
+That CLI truncates the request id it prints to eight characters, so two of these permissions are told apart by `paseo inspect <agent> --json` rather than by `permit ls`.
+
+There is no plugin timeline renderer for any of this, and there should not be one: the host's question card already does more than a renderer here would, and it is the only path in the app that sends `updatedInput` at all.
+A plan is `kind: "plan"` with `metadata.planText`, which is what the host's plan card reads first, and Paseo's own Implement and Reject actions.
+There is no `implement_resume` beside them: that intent means returning to the mode planning interrupted, and the permission mode is an argument the adapter launches Claude with, so a session cannot change it.
+
 ## Constraints that are not obvious
 
 The daemon's `PATH` is not your shell's.

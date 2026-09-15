@@ -1,10 +1,18 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { AgentSideConnection, PermissionOption, RequestPermissionResponse, ToolCallUpdate, ToolKind } from "@agentclientprotocol/sdk";
+import { takeCardAnswers } from "./card-answers.ts";
 import { createDeferred, type Deferred } from "./deferred.ts";
 import type { HookPayload, HookResponse } from "./hook-server.ts";
 import { writeLog } from "./log.ts";
-import { questionText } from "./question-text.ts";
+import {
+  answerFromOption,
+  answersForCards,
+  questionCardOptions,
+  questionCards,
+  REPLY_IN_CHAT_OPTION_ID,
+  type QuestionCard,
+} from "./question-card.ts";
 
 type PermissionSuggestion = Record<string, unknown>;
 
@@ -34,6 +42,17 @@ type Consent = {
 type InteractionOutcome =
   | { decision: "allow"; input: Record<string, unknown> }
   | { decision: "deny"; reason: string };
+
+/**
+ * Claude's own names for the two tools that ask a person something rather than the machine. They
+ * ride out as the permission's `name`, which is what `plugins/claude-tty/server/question-cards.ts`
+ * matches to give each one Paseo's card for it.
+ */
+const QUESTION_TOOL = "AskUserQuestion";
+const PLAN_TOOL = "ExitPlanMode";
+
+/** Paseo's own id for approving a plan; the plugin publishes it with the `implement` intent. */
+const IMPLEMENT_OPTION_ID = "implement";
 
 const TOOL_KINDS: Record<string, ToolKind> = {
   Bash: "execute",
@@ -153,8 +172,8 @@ export class InteractionBridge {
   // A hook that died leaves the pipeline to ask instead, so the same interaction serves both events: it reuses the card already on screen, or renders one here.
   // Rendering the tool again would show it as raw JSON, and that card's Allow leaves Claude waiting at its own dialog inside the PTY.
   private interactionFor(name: string, input: Record<string, unknown>, toolUseId: string): Promise<InteractionOutcome> | null {
-    if (name === "AskUserQuestion") return this.interaction(name, input, () => this.handleQuestions(toolUseId, input));
-    if (name === "ExitPlanMode") return this.interaction(name, input, () => this.handlePlanApproval(toolUseId, input));
+    if (name === QUESTION_TOOL) return this.interaction(name, input, () => this.handleQuestions(toolUseId, input));
+    if (name === PLAN_TOOL) return this.interaction(name, input, () => this.handlePlanApproval(toolUseId, input));
     return null;
   }
 
@@ -167,87 +186,66 @@ export class InteractionBridge {
     return pending;
   }
 
+  /**
+   * One card for the whole tool call, whatever it asks: the plugin republishes it as Paseo's own
+   * question request, which renders every question at once with real radio groups, checkboxes for
+   * `multiSelect` and a text box for an answer that is on none of the lists, and answers it in one
+   * response. What comes back is the answers themselves, or a single option from a client that has
+   * no such form, or nothing — and a card nobody answered is one Claude asks again in prose.
+   */
   private async handleQuestions(toolUseId: string, input: Record<string, unknown>): Promise<InteractionOutcome> {
-    const questions = Array.isArray(input.questions) ? input.questions : [];
-    const answers: Record<string, string> = {};
-    const deferredQuestions: string[] = [];
-    for (let index = 0; index < questions.length; index += 1) {
-      const question = objectValue(questions[index]);
-      const text = stringValue(question?.question);
-      if (!question || !text) continue;
-      const selected = new Set<string>();
-      let round = 0;
-      while (true) {
-        const choices = Array.isArray(question.options) ? question.options : [];
-        const options: PermissionOption[] = choices.flatMap((value, optionIndex) => {
-          const option = objectValue(value);
-          const label = stringValue(option?.label);
-          if (!label) return [];
-          return [questionOption(`answer-${optionIndex}`, `${selected.has(label) ? "✓ " : ""}${label}`)];
-        });
-        if (question.multiSelect === true) options.push(questionOption("done", "Done"));
-        options.push(questionOption("reply-next", "Answer this question in chat"));
-        const response = await this.request({
-          toolCall: {
-            toolCallId: `${toolUseId}-question-${index}-${round}`,
-            title: stringValue(question.header) || text,
-            kind: "other",
-            status: "pending",
-            rawInput: question,
-            content: [{ type: "content", content: { type: "text", text: questionText(question, text) } }],
-          },
-          options,
-        });
-        if (response.outcome.outcome === "cancelled") {
-          const remainingQuestions = questions.slice(index).flatMap((value) => {
-            const remaining = objectValue(value);
-            const remainingText = stringValue(remaining?.question);
-            return remainingText ? [remainingText] : [];
-          });
-          return conversationalQuestionFallback(answers, [...deferredQuestions, ...remainingQuestions]);
-        }
-        if (response.outcome.optionId === "reply-next") {
-          deferredQuestions.push(text);
-          break;
-        }
-        if (response.outcome.optionId === "done") {
-          answers[text] = [...selected].join(", ");
-          break;
-        }
-        const optionIndex = Number.parseInt(response.outcome.optionId.replace("answer-", ""), 10);
-        const chosen = objectValue(choices[optionIndex]);
-        const label = stringValue(chosen?.label);
-        if (!label) return conversationalQuestionFallback();
-        if (question.multiSelect !== true) {
-          answers[text] = label;
-          break;
-        }
-        if (selected.has(label)) selected.delete(label);
-        else selected.add(label);
-        round += 1;
-      }
-    }
-    if (deferredQuestions.length > 0) return conversationalQuestionFallback(answers, deferredQuestions);
+    const cards = questionCards(input);
+    if (cards.length === 0) return { decision: "allow", input: { ...input, answers: {} } };
+    const cardId = `${toolUseId}-questions`;
+    const response = await this.request({
+      toolCall: {
+        toolCallId: cardId,
+        // ACP has no field for the tool's own name, so the title carries it: it is what the bridge
+        // reports as the permission's name, and the plugin matches on that to give this its card.
+        title: QUESTION_TOOL,
+        kind: "other",
+        status: "pending",
+        rawInput: input,
+      },
+      options: questionCardOptions(cards),
+    });
+    const answers = await this.questionCardAnswers(cardId, response, cards);
+    const deferred = cards.filter((card) => answers[card.question] === undefined).map((card) => card.question);
+    if (deferred.length > 0) return conversationalQuestionFallback(answers, deferred);
     return { decision: "allow", input: { ...input, answers } };
   }
 
+  private async questionCardAnswers(
+    cardId: string,
+    response: RequestPermissionResponse,
+    cards: QuestionCard[],
+  ): Promise<Record<string, string>> {
+    if (response.outcome.outcome === "cancelled" || response.outcome.optionId === REPLY_IN_CHAT_OPTION_ID) return {};
+    const handedOff = await takeCardAnswers(cardId);
+    if (handedOff) return answersForCards(handedOff, cards);
+    return answerFromOption(response.outcome.optionId, cards) ?? {};
+  }
+
+  /**
+   * Paseo's own plan vocabulary: the plugin turns this into a `kind: "plan"` request, whose card
+   * renders the plan itself and offers Implement against Reject. There is no `implement_resume`
+   * beside them, because the mode is a launch argument here and this session cannot change it.
+   */
   private async handlePlanApproval(toolUseId: string, input: Record<string, unknown>): Promise<InteractionOutcome> {
-    const plan = stringValue(input.plan) || stringValue(input.planContent) || stringValue(input.plan_file_path);
     const response = await this.request({
       toolCall: {
         toolCallId: `${toolUseId}-approval`,
-        title: "Approve Claude's plan",
+        title: PLAN_TOOL,
         kind: "switch_mode",
         status: "pending",
         rawInput: input,
-        ...(plan ? { content: [{ type: "content", content: { type: "text", text: plan } }] } : {}),
       },
       options: [
-        { optionId: "approve-plan", name: "Approve plan", kind: "allow_once" },
-        { optionId: "deny-plan", name: "Keep planning", kind: "reject_once" },
+        { optionId: IMPLEMENT_OPTION_ID, name: "Implement", kind: "allow_once" },
+        { optionId: "reject", name: "Reject", kind: "reject_once" },
       ],
     });
-    if (response.outcome.outcome === "selected" && response.outcome.optionId === "approve-plan") return { decision: "allow", input };
+    if (response.outcome.outcome === "selected" && response.outcome.optionId === IMPLEMENT_OPTION_ID) return { decision: "allow", input };
     return { decision: "deny", reason: "The user did not approve leaving plan mode." };
   }
 
@@ -338,12 +336,8 @@ function conversationalQuestionFallback(answers: Record<string, string> = {}, de
   const deferred = deferredQuestions.length > 0 ? ` Ask only these deferred questions: ${JSON.stringify(deferredQuestions)}.` : "";
   return {
     decision: "deny",
-    reason: `The user chose to answer some questions in chat.${completed}${deferred} Restate the deferred questions conversationally in one message, then end this turn and wait for the user's response.`,
+    reason: `The user left these questions to be asked in chat.${completed}${deferred} Restate the deferred questions conversationally in one message, then end this turn and wait for the user's response.`,
   };
-}
-
-function questionOption(optionId: string, name: string): PermissionOption {
-  return { optionId, name, kind: optionId === "reply-next" ? "reject_once" : "allow_once" };
 }
 
 function toolCall(id: string, name: string, input: Record<string, unknown>, cwd: string): ToolCallUpdate {

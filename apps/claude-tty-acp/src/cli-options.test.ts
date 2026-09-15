@@ -3,20 +3,28 @@ import test from "node:test";
 import { parseCliArgs } from "./cli-options.ts";
 
 test("serves ACP when no CLI flags are passed", () => {
-  assert.deepEqual(parseCliArgs([]), { kind: "serve", settingsFile: null });
+  assert.deepEqual(parseCliArgs([]), { kind: "serve", settingsFile: null, answersDirectory: null });
 });
 
-test("takes the settings document the plugin names at spawn", () => {
+test("takes the paths the plugin names at spawn, in either order", () => {
   assert.deepEqual(parseCliArgs(["--settings-file", "/paseo/plugin-settings/claude-tty/settings.json"]), {
     kind: "serve",
     settingsFile: "/paseo/plugin-settings/claude-tty/settings.json",
+    answersDirectory: null,
+  });
+  assert.deepEqual(parseCliArgs(["--answers-dir", "/state/card-answers", "--settings-file", "/settings.json"]), {
+    kind: "serve",
+    settingsFile: "/settings.json",
+    answersDirectory: "/state/card-answers",
   });
 });
 
-test("rejects --settings-file without a path", () => {
+test("rejects a path flag without a path, and a flag given twice", () => {
   assert.throws(() => parseCliArgs(["--settings-file"]), /Unknown arguments/);
   assert.throws(() => parseCliArgs(["--settings-file", "--json"]), /Unknown arguments/);
   assert.throws(() => parseCliArgs(["--settings-file", ""]), /Unknown arguments/);
+  assert.throws(() => parseCliArgs(["--answers-dir"]), /Unknown arguments/);
+  assert.throws(() => parseCliArgs(["--answers-dir", "/a", "--answers-dir", "/b"]), /Unknown arguments/);
 });
 
 test("prints help and version without starting ACP", () => {
