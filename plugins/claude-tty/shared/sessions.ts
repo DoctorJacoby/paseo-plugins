@@ -11,6 +11,8 @@ export type SessionAgent = { id: string; title: string | null };
 
 export type SessionEntry = {
   id: string;
+  /** The state directory this entry was read from, which is where a mutation of it must act. */
+  stateDirectory: string;
   claudeSessionId: string | null;
   cwd: string | null;
   model: string | null;
@@ -29,6 +31,7 @@ export type SessionEntry = {
  * stem. A lock with no session beside it is still worth listing: releasing it is the whole point.
  */
 export function joinSessions(
+  stateDirectory: string,
   sessions: readonly StateFile[],
   locks: readonly StateFile[],
   isAlive: (pid: number) => boolean,
@@ -53,6 +56,7 @@ export function joinSessions(
     lockById.delete(id);
     entries.push({
       id,
+      stateDirectory,
       claudeSessionId: session?.claudeSessionId ?? null,
       cwd: session?.cwd ?? null,
       model: session?.model ?? null,
@@ -68,6 +72,7 @@ export function joinSessions(
   for (const [id, lock] of lockById) {
     entries.push({
       id,
+      stateDirectory,
       claudeSessionId: null,
       cwd: null,
       model: null,
@@ -84,7 +89,7 @@ export function joinSessions(
 }
 
 /** Live sessions first, then the most recently used, then something stable. */
-function byRecency(a: SessionEntry, b: SessionEntry): number {
+export function byRecency(a: SessionEntry, b: SessionEntry): number {
   if ((a.lock?.live ?? false) !== (b.lock?.live ?? false)) return a.lock?.live ? -1 : 1;
   if (a.lastActivity !== b.lastActivity) return (b.lastActivity ?? 0) - (a.lastActivity ?? 0);
   return a.id.localeCompare(b.id);

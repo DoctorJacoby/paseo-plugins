@@ -21,11 +21,12 @@ import {
   offeredModeId,
 } from "./session-options.ts";
 import { SessionLock } from "./session-lock.ts";
-import { type PersistedSession, StateStore } from "./state-store.ts";
+import { type PersistedSession, StateStore, stateScope, type StateScope, workspaceStateDirectory } from "./state-store.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import { TranscriptTranslator } from "./transcript-translator.ts";
 import { readIdleTimeout } from "./idle-timeout.ts";
-import { writeLog } from "./log.ts";
+import { enableLogFile, writeLog } from "./log.ts";
+import { APP_NAME } from "./constants.ts";
 
 export type SessionRegistryDependencies = RuntimeDependencies & {
   /**
@@ -35,6 +36,10 @@ export type SessionRegistryDependencies = RuntimeDependencies & {
   idleTimeoutMs?: number;
   /** Left out in production, where the host settings are read at each request so a change in Paseo reaches live sessions. */
   autoAcceptDefault?: (mode: string) => Promise<boolean>;
+  /** Left out in production, where the environment says how session state is keyed under the root. */
+  stateScope?: StateScope;
+  /** Left out in production, where the log moves with the state it is about. Tests pass a no-op. */
+  relocateLog?: (stateDirectory: string) => void;
 };
 
 /** How long a suspension stands aside when the session is busy or someone still has a card to answer. */
@@ -388,6 +393,7 @@ export class SessionRegistry {
   private readonly hooks: HookServer;
   private readonly dependencies: SessionRegistryDependencies;
   private readonly stateStore: StateStore;
+  private readonly workspaceStores = new Map<string, StateStore>();
 
   constructor(
     connection: AgentSideConnection,
@@ -418,7 +424,8 @@ export class SessionRegistry {
 
   async load(sessionId: string, cwd: string): Promise<ClaudeSession> {
     if (this.sessions.has(sessionId)) throw new Error(`ACP session ${sessionId} is already open in this adapter`);
-    const state = await this.stateStore.load(sessionId);
+    if (!path.isAbsolute(cwd)) throw new Error("ACP session cwd must be an absolute path");
+    const state = await this.loadRehoming(sessionId, path.normalize(cwd));
     if (!state) throw new Error(`Persisted ACP session ${sessionId} was not found on this host`);
     const model = migrateModelId(state.model);
     assertModelId(model);
@@ -464,8 +471,48 @@ export class SessionRegistry {
     return this.sessions.size;
   }
 
+  /**
+   * A session is read from where the current scope keys it, and failing that from where the other
+   * scope would have — then moved, so a host that switches scope resumes every session it had and
+   * lists each one once. The move is copy-then-remove of a file this adapter is about to lock, and
+   * the stale copy is only removed after the new one is written.
+   */
+  private async loadRehoming(sessionId: string, cwd: string): Promise<PersistedSession | null> {
+    const store = this.storeFor(cwd);
+    const state = await store.load(sessionId);
+    if (state !== null) return state;
+    const previous = store === this.stateStore ? new StateStore(workspaceStateDirectory(this.stateStore.root, cwd)) : this.stateStore;
+    const left = await previous.load(sessionId);
+    if (left === null) return null;
+    // A session that belongs to another working directory is not this one come home: leave it
+    // where it is and let the caller's own cwd check word the refusal.
+    if (path.normalize(left.cwd) !== cwd) return left;
+    await store.save(left);
+    await previous.remove(sessionId);
+    writeLog({ level: "info", message: `Moved the persisted session from ${previous.root} to ${store.root}, where the state scope now keeps it`, sessionId });
+    return left;
+  }
+
+  /**
+   * The store a session's working directory keys. Under the historical `shared` scope every cwd
+   * shares the root; under `workspace` each cwd gets its own slice, and the log file moves with the
+   * newest one — one adapter process serves one workspace in practice, and a record written before
+   * the workspace was known has already gone to the root's log.
+   */
+  private storeFor(cwd: string): StateStore {
+    if ((this.dependencies.stateScope ?? stateScope()) === "shared") return this.stateStore;
+    const directory = workspaceStateDirectory(this.stateStore.root, cwd);
+    const held = this.workspaceStores.get(directory);
+    if (held !== undefined) return held;
+    const store = new StateStore(directory);
+    this.workspaceStores.set(directory, store);
+    const relocateLog = this.dependencies.relocateLog ?? ((root: string) => enableLogFile(path.join(root, "logs", `${APP_NAME}.log`)));
+    relocateLog(directory);
+    return store;
+  }
+
   private createSession(options: SessionOptions): ClaudeSession {
-    const session = new ClaudeSession(options, this.connection, this.hooks, this.dependencies, this.stateStore);
+    const session = new ClaudeSession(options, this.connection, this.hooks, this.dependencies, this.storeFor(options.cwd));
     this.sessions.set(session.id, session);
     return session;
   }

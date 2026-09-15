@@ -3,11 +3,12 @@ import path from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import type { SessionsPayload } from "../shared/contracts.ts";
 import { lockOwnerRefusal, ownsLock, type LockOwnerRefusal, type ProcessIdentity } from "./lock-owner.ts";
-import { defaultStateDirectory, locksDirectory, sessionsDirectory } from "./paths.ts";
+import { defaultStateDirectory, locksDirectory, sessionsDirectory, workspacesDirectory } from "./paths.ts";
 import {
   LOCK_SUFFIX,
   SESSION_SUFFIX,
   attachAgents,
+  byRecency,
   isSafeStateFileStem,
   joinSessions,
   type SessionEntry,
@@ -55,16 +56,15 @@ export async function releaseLock(paseo: PaseoApi, id: string): Promise<Sessions
   const entry = await requireEntry(id);
   if (entry.lock === null) throw new Error(`Session ${id} holds no lock.`);
   if (entry.lock.live) throw new Error(`Process ${entry.lock.pid} still holds session ${id}. Stop it first.`);
-  await unlink(path.join(locksDirectory(defaultStateDirectory()), `${id}${LOCK_SUFFIX}`));
+  await unlink(path.join(locksDirectory(entry.stateDirectory), `${id}${LOCK_SUFFIX}`));
   return listSessions(paseo);
 }
 
 /** Safe by construction: a live lock is never a candidate, so this needs no confirmation of its own. */
 export async function releaseStaleLocks(paseo: PaseoApi): Promise<SessionsPayload> {
-  const directory = locksDirectory(defaultStateDirectory());
   const stale = (await readState()).sessions.filter((entry) => entry.lock !== null && !entry.lock.live);
   for (const entry of stale) {
-    await unlink(path.join(directory, `${entry.id}${LOCK_SUFFIX}`)).catch(() => undefined);
+    await unlink(path.join(locksDirectory(entry.stateDirectory), `${entry.id}${LOCK_SUFFIX}`)).catch(() => undefined);
   }
   return listSessions(paseo);
 }
@@ -107,8 +107,7 @@ async function runStop(paseo: PaseoApi, id: string): Promise<SessionsPayload> {
 export async function quarantineSession(paseo: PaseoApi, id: string): Promise<SessionsPayload> {
   const entry = await requireEntry(id);
   if (!entry.corrupt) throw new Error(`Session ${id} is readable, so there is nothing to quarantine.`);
-  const directory = sessionsDirectory(defaultStateDirectory());
-  const source = path.join(directory, `${id}${SESSION_SUFFIX}`);
+  const source = path.join(sessionsDirectory(entry.stateDirectory), `${id}${SESSION_SUFFIX}`);
   await rename(source, `${source}.corrupt-${Date.now()}`);
   return listSessions(paseo);
 }
@@ -145,13 +144,39 @@ async function requireEntry(id: string): Promise<SessionEntry> {
 
 export async function readState(): Promise<StateReading> {
   const root = defaultStateDirectory();
-  const sessions = await readDirectory(sessionsDirectory(root));
-  const locks = await readDirectory(locksDirectory(root));
-  return {
-    stateDirectory: root,
-    problem: sessions.problem ?? locks.problem,
-    sessions: joinSessions(sessions.files, locks.files, processIsAlive),
-  };
+  let problem: string | null = null;
+  const entries: SessionEntry[] = [];
+  for (const directory of await stateDirectories(root)) {
+    const sessions = await readDirectory(sessionsDirectory(directory));
+    const locks = await readDirectory(locksDirectory(directory));
+    problem ??= sessions.problem ?? locks.problem;
+    entries.push(...joinSessions(directory, sessions.files, locks.files, processIsAlive));
+  }
+  return { stateDirectory: root, problem, sessions: entries.sort(byRecency) };
+}
+
+/**
+ * Every directory the adapter may be keeping sessions in: the root itself, and one slice per
+ * workspace when it runs with `CLAUDE_TTY_ACP_STATE_SCOPE=workspace`. The layout is read off the
+ * disk rather than off that variable, because which of them was in force when a session was written
+ * is a property of the session, not of this process's environment — a host that switches scope
+ * keeps every session it had.
+ */
+async function stateDirectories(root: string): Promise<string[]> {
+  const workspaces = workspacesDirectory(root);
+  let names: { name: string; isDirectory(): boolean }[];
+  try {
+    names = await readdir(workspaces, { withFileTypes: true });
+  } catch {
+    return [root];
+  }
+  return [
+    root,
+    ...names
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(workspaces, entry.name))
+      .sort(),
+  ];
 }
 
 /**
@@ -163,7 +188,16 @@ export async function readSessionEntry(stateDirectory: string, id: string): Prom
   const name = `${id}${SESSION_SUFFIX}`;
   const contents = await readFile(path.join(sessionsDirectory(stateDirectory), name), "utf8").catch(() => null);
   if (contents === null) return null;
-  return joinSessions([{ name, contents }], [], () => false)[0] ?? null;
+  return joinSessions(stateDirectory, [{ name, contents }], [], () => false)[0] ?? null;
+}
+
+/** The single-session read, wherever the adapter keeps that session — root first, then the slices. */
+export async function findSessionEntry(id: string): Promise<SessionEntry | null> {
+  for (const directory of await stateDirectories(defaultStateDirectory())) {
+    const entry = await readSessionEntry(directory, id);
+    if (entry !== null) return entry;
+  }
+  return null;
 }
 
 /**

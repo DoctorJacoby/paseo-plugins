@@ -85,6 +85,8 @@ export const getDoctor = defineRpc({
 
 export const SessionSchema = z.object({
   id: z.string(),
+  /** The state directory this session was read from — the root, or one workspace's slice of it. */
+  stateDirectory: z.string(),
   claudeSessionId: z.string().nullable(),
   cwd: z.string().nullable(),
   model: z.string().nullable(),

@@ -73,6 +73,15 @@ export function locksDirectory(stateDirectory: string): string {
 }
 
 /**
+ * Where an adapter running with `CLAUDE_TTY_ACP_STATE_SCOPE=workspace` keeps each workspace's slice
+ * of the state root — one subdirectory per working directory, named by the adapter's own escape.
+ * Which layout is in use is the adapter's decision; this side lists sessions wherever they are kept.
+ */
+export function workspacesDirectory(stateDirectory: string): string {
+  return path.join(stateDirectory, "workspaces");
+}
+
+/**
  * Where a question card's answers wait for the adapter to read them. It sits in the adapter's own
  * state directory rather than the daemon's settings store, which the daemon owns, and the path is
  * passed at spawn rather than recomputed there, so the two sides cannot disagree about it.

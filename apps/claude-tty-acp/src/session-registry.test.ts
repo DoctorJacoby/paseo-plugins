@@ -6,7 +6,7 @@ import test from "node:test";
 import type { AgentSideConnection, SessionConfigOption, SessionNotification } from "@agentclientprotocol/sdk";
 import { HookServer } from "./hook-server.ts";
 import { SessionRegistry } from "./session-registry.ts";
-import { StateStore } from "./state-store.ts";
+import { StateStore, workspaceStateDirectory } from "./state-store.ts";
 
 function createRegistry(): SessionRegistry {
   return new SessionRegistry({} as AgentSideConnection, new HookServer());
@@ -207,3 +207,132 @@ function currentAutoAccept(session: { configOptions: SessionConfigOption[] }): b
   const option = session.configOptions.find((entry) => entry.id === "auto_accept");
   return option?.type === "boolean" ? option.currentValue : undefined;
 }
+
+test("keys a loaded session's state by its workspace when the scope says so", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "session-registry-test-"));
+  const sessionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const cwd = path.join(root, "checkout");
+  const shared = new StateStore(root);
+  const relocated: string[] = [];
+  const registry = new SessionRegistry(
+    { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection,
+    new HookServer(),
+    { claudeConfigDir: root, stateScope: "workspace", relocateLog: (directory) => relocated.push(directory) },
+    shared,
+  );
+  try {
+    const slice = new StateStore(workspaceStateDirectory(root, cwd));
+    await slice.save({
+      version: 1,
+      acpSessionId: sessionId,
+      claudeSessionId: sessionId,
+      cwd,
+      model: "inherit",
+      mode: "default",
+      lastActivity: 1,
+    });
+    const session = await registry.load(sessionId, cwd);
+    assert.equal(session.cwd, cwd);
+    // The session was found in its slice: the shared root never held it.
+    assert.equal(await shared.load(sessionId), null);
+    // The log follows the workspace, once, however many times the slice is resolved.
+    registry.create(cwd);
+    assert.deepEqual(relocated, [workspaceStateDirectory(root, cwd)]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("keeps every workspace's state in the shared root by default", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "session-registry-test-"));
+  const sessionId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const cwd = path.join(root, "checkout");
+  const shared = new StateStore(root);
+  const registry = new SessionRegistry(
+    { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection,
+    new HookServer(),
+    { claudeConfigDir: root, relocateLog: () => undefined },
+    shared,
+  );
+  try {
+    await shared.save({
+      version: 1,
+      acpSessionId: sessionId,
+      claudeSessionId: sessionId,
+      cwd,
+      model: "inherit",
+      mode: "default",
+      lastActivity: 1,
+    });
+    const session = await registry.load(sessionId, cwd);
+    assert.equal(session.cwd, cwd);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("re-homes a session persisted before the scope was switched, in either direction", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "session-registry-test-"));
+  const cwd = path.join(root, "checkout");
+  const shared = new StateStore(root);
+  const slice = new StateStore(workspaceStateDirectory(root, cwd));
+  const persisted = (id: string) => ({
+    version: 1 as const,
+    acpSessionId: id,
+    claudeSessionId: id,
+    cwd,
+    model: "inherit",
+    mode: "default",
+    lastActivity: 1,
+  });
+  const connection = { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection;
+  try {
+    // Shared-era session, workspace scope: found in the root, moved into the slice.
+    const before = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    await shared.save(persisted(before));
+    const scoped = new SessionRegistry(connection, new HookServer(), { claudeConfigDir: root, stateScope: "workspace", relocateLog: () => undefined }, shared);
+    assert.equal((await scoped.load(before, cwd)).cwd, cwd);
+    assert.equal(await shared.load(before), null);
+    assert.notEqual(await slice.load(before), null);
+
+    // Workspace-era session, shared scope: found in the slice, moved back to the root.
+    const after = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    await slice.save(persisted(after));
+    const unscoped = new SessionRegistry(connection, new HookServer(), { claudeConfigDir: root, relocateLog: () => undefined }, shared);
+    assert.equal((await unscoped.load(after, cwd)).cwd, cwd);
+    assert.equal(await slice.load(after), null);
+    assert.notEqual(await shared.load(after), null);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("leaves a fallback session that belongs to another workspace where it is", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "session-registry-test-"));
+  const cwd = path.join(root, "checkout");
+  const elsewhere = path.join(root, "other");
+  const sessionId = "abababab-abab-4bab-8bab-abababababab";
+  const shared = new StateStore(root);
+  const registry = new SessionRegistry(
+    { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection,
+    new HookServer(),
+    { claudeConfigDir: root, stateScope: "workspace", relocateLog: () => undefined },
+    shared,
+  );
+  try {
+    await shared.save({
+      version: 1,
+      acpSessionId: sessionId,
+      claudeSessionId: sessionId,
+      cwd: elsewhere,
+      model: "inherit",
+      mode: "default",
+      lastActivity: 1,
+    });
+    await assert.rejects(registry.load(sessionId, cwd), /belongs to/);
+    // The refusal moved nothing: the session still sits in the shared root, cwd intact.
+    assert.equal((await shared.load(sessionId))?.cwd, elsewhere);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
