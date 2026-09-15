@@ -1,8 +1,10 @@
 # Claude TTY
 
-Install, diagnose, and manage the [Claude TTY ACP adapter](../../apps/claude-tty-acp) on the host running the Paseo daemon.
+Adds **Claude TTY** to Paseo's provider list: the genuine interactive Claude Code CLI, driven in a PTY by the [Claude TTY ACP adapter](../../apps/claude-tty-acp).
 
-The adapter's own setup is a checklist a person follows on each host: build it, check it, add a provider entry, reload the daemon. This plugin does that from Paseo's sidebar instead, on whichever host is selected.
+The plugin registers the provider itself and runs the adapter it was installed beside, so there is no provider entry to write into the daemon configuration and nothing to reload. It also diagnoses the adapter and manages its saved sessions from Paseo's sidebar, on whichever host is selected.
+
+Owning it is what gives a session its own pickers, too. The model list is Claude Code's rolling aliases and the releases behind them, and beside it is a **thinking** picker carrying Claude Code's effort levels, which claude-tty had no way to offer before. Either can be changed while a session is idle: the adapter restarts Claude on the same conversation with the new flag, so the choice is a real one rather than a message typed into the box.
 
 ## Screenshots
 
@@ -11,44 +13,47 @@ _None yet._
 ## Installation
 
 ```sh
-paseo plugin install "/absolute/path/to/paseo-plugins/plugins/claude-tty"
+paseo plugin add sleeyax/paseo-plugins --path plugins/claude-tty
 ```
 
-Unlike the other plugins here, this one is installed from a clone rather than from Git. A Git installation runs no package manager, and this plugin manages an adapter that has to be built, so install it from the same clone that holds `apps/claude-tty-acp` and build the adapter there first:
+Paseo tracks the default branch from there, so `paseo plugin update claude-tty` picks up new releases without a clone. `paseo plugin status` says what is installed against what is available.
+
+Install and update both build the adapter first, from the manifest's `build` commands, which is why this plugin needs `pnpm` on the daemon's `PATH` where the others need nothing. A failing build is reported and the installed version is left running.
+
+Installing from a clone works too, and is what to do while developing the adapter — build it yourself first, since a directory installation runs no build:
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm --filter @paseo-plugins/claude-tty-acp build
+paseo plugin add "/absolute/path/to/paseo-plugins/plugins/claude-tty"
 ```
 
-Then open **Claude TTY** in the Paseo sidebar and press **Install**.
-
-That checks the adapter is built, runs its host checks, registers the `traecli` provider, and asks Paseo to re-probe its providers. No daemon restart is needed. The adapter README explains [why the provider ID is borrowed](../../apps/claude-tty-acp/README.md#slash-commands-need-a-borrowed-provider-id).
-
-Two things stay yours to arrange, because the plugin cannot do them for you:
-
-- **A built adapter.** The plugin never builds one: it reports whether `apps/claude-tty-acp/dist/cli.js` exists and refuses to register a provider pointing at an executable that would not start. Rebuild it by hand after pulling, then press **Install** again.
-- **An authenticated Claude.** Run `claude` interactively as the user the daemon runs as. The plugin never touches Claude's configuration, credentials, or transcripts.
+**An authenticated Claude stays yours to arrange.** Run `claude` interactively as the user the daemon runs as; the plugin never touches Claude's configuration, credentials, or transcripts.
 
 Everything is host-local: selecting another host in Paseo shows that host's own answer, and each host is installed separately.
+
+### Upgrading from the `traecli` provider
+
+Earlier versions of this plugin, and the adapter's own README, registered the adapter in the daemon configuration under the provider ID `traecli`. This version registers a provider of its own, `claude-tty`, and `paseo plugin update claude-tty` leaves the old entry where it was, so Paseo lists Claude TTY twice. The panel says so under **Left over from an older install** for as long as the entry is there, with the number of agents still on it.
+
+- **An agent stays on the provider it was started on.** Agents started on `traecli` keep using the old entry and cannot resume once it is gone, so remove it once none are left: under **Settings → Providers** on that host it is the Claude TTY entry with an actions menu, and **Remove provider** deletes it from the configuration. The plugin never removes it itself.
+- **The provider ID changes.** Anything that names `traecli/<model>` — a spawn script, an agent profile, a schedule — goes on starting agents on the old entry, and stops working once it is removed. Point it at `claude-tty/<model>` instead.
 
 ## Settings
 
 The **Suspend idle Claude** setting controls how long a native Claude process remains alive after the session last did anything. It defaults to one hour, and you can choose 15 minutes through 8 hours, or **Never**.
 
-Suspending stops the PTY and any background tasks it owns, but does not close or archive the Paseo agent. The adapter keeps the persisted session mapping, and the next prompt automatically launches `claude --resume` with the same Claude session, model, and mode. The timer runs from the last thing the session actually did, not from the last prompt: a turn Claude runs on its own after a task notification, the agents it launches, and the hooks it calls all count, so a session working unattended is not stopped mid-run.
+Suspending stops the PTY and any background tasks it owns, but does not close or archive the Paseo agent. The adapter keeps the persisted session mapping, and the next prompt automatically launches `claude --resume` with the same Claude session, model, mode, and effort level. The timer runs from the last thing the session actually did, not from the last prompt: a turn Claude runs on its own after a task notification, the agents it launches, and the hooks it calls all count, so a session working unattended is not stopped mid-run.
 
 A session waiting on a subagent is not suspended at all. The adapter holds the turn open until every agent it launched has reported, which is also what makes Paseo show the session as busy while they work, and a suspension stands aside for an active turn and tries again later. A turn whose agents have written nothing for fifteen minutes stops waiting, so a stuck agent cannot keep a session alive indefinitely. A command Claude runs in the background holds the turn the same way, because Claude goes idle while it runs and is woken by its report; a command that has not reported after thirty minutes — a server, typically, which never will — stops being waited on.
 
 The adapter reads the setting each time it schedules a suspension, so a change applies to sessions that are already open rather than only to the next adapter launch. A suspension also stands aside while a permission or question card is still waiting for an answer, and tries again later.
 
-Setting `CLAUDE_TTY_ACP_IDLE_TIMEOUT_MS` on the provider entry, or on the daemon itself, overrides this setting for the hosts that do it; the panel says so when the entry is what sets it.
-
-An entry pointing at a different checkout is reported as a mismatch and left alone until you press **Point it at this checkout**, and an entry the plugin does not recognise is never written over at all.
+Setting `CLAUDE_TTY_ACP_IDLE_TIMEOUT_MS` on the daemon overrides this setting for the hosts that do it, because the adapter inherits the daemon's environment and lets the variable win; the panel says so when something has set it.
 
 ## Troubleshooting
 
-**Diagnostics** runs the host checks of the executable the daemon would actually launch — not the one this checkout builds — and shows Paseo's own provider diagnostic beneath them. A stale entry pointing somewhere else is exactly what that distinction catches.
+**Diagnostics** runs the adapter's own host checks — Claude on the daemon's `PATH` above all. Paseo drops the adapter's stderr, so running them is the only way to read them; what Paseo itself makes of the provider is in the provider list and in `paseo plugin logs claude-tty`.
 
 **Sessions** lists the adapter's saved sessions and the locks over them, each named after the Paseo agent holding it and saying when it was last prompted. That reads "last prompted" rather than "active" on purpose: the adapter stamps the time as a prompt starts, so a session an hour into one turn is still working.
 
@@ -64,7 +69,7 @@ A lock names the process holding a session; the adapter clears its own on exit a
 
 The adapter's [troubleshooting table](../../apps/claude-tty-acp/README.md#troubleshooting) covers everything that goes wrong once a session is running. Its log is kept at `${XDG_STATE_HOME:-~/.local/state}/claude-tty-acp/logs/claude-tty-acp.log`, or under `CLAUDE_TTY_ACP_STATE_DIR` where that is set, because the daemon reads the adapter's stderr and keeps none of it.
 
-The **Danger zone** removes the provider entry and nothing else. Deleting the state directory is a separate opt-in, refused while a session is open, and the source checkout is never touched.
+The provider goes away with the plugin, so removing it is `paseo plugin remove claude-tty`. What that leaves behind is the state directory, and the **Danger zone** deletes it: saved sessions stop resuming, it is refused while a session is open, and Claude's own configuration and transcripts are never touched.
 
 ## Development
 

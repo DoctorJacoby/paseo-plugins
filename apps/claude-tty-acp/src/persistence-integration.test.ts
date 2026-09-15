@@ -67,7 +67,8 @@ test("loads history lazily, resumes Claude, and follows clear session rotation",
     sessionUpdate: async (notification: SessionNotification) => {
       updates.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const pty = new LoadFakePty();
   const spawns: string[][] = [];
   let agent!: ClaudeTtyAgent;
@@ -145,7 +146,8 @@ test("closes the background agent a loaded session's history leaves running", as
     sessionUpdate: async (notification: SessionNotification) => {
       updates.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const agent = new ClaudeTtyAgent(connection, { claudeConfigDir: configDirectory, runtimeRoot, stateDirectory, startupTimeoutMs: 500, readinessTimeoutMs: 0 });
 
   try {

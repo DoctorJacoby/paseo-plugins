@@ -4,9 +4,23 @@ import path from "node:path";
 export type Env = Record<string, string | undefined>;
 
 export const PLUGIN_ID = "claude-tty";
-export const ADAPTER_PACKAGE = "@paseo-plugins/claude-tty-acp";
 export const ADAPTER_BINARY_NAME = "claude-tty-acp";
 export const ADAPTER_ENTRY_NAME = "cli.js";
+
+/**
+ * The daemon configuration, which is the only record of where this plugin was installed from.
+ * Mirrors the daemon's own `resolvePaseoHome`, whose `PASEO_HOME` the plugin process inherits.
+ */
+export function daemonConfigPath(env: Env = process.env): string {
+  const home = env.PASEO_HOME?.trim() || "~/.paseo";
+  return path.join(path.resolve(expandHome(home, env)), "config.json");
+}
+
+function expandHome(input: string, env: Env): string {
+  const home = env.HOME || os.homedir();
+  if (input === "~") return home;
+  return input.startsWith("~/") ? path.join(home, input.slice(2)) : input;
+}
 
 /** Mirrors the adapter's own `defaultStateDirectory`; the plugin runs in the daemon and cannot import it. */
 export function defaultStateDirectory(env: Env = process.env): string {

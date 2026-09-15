@@ -1,56 +1,42 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
-import { classifyProviderEntry, envOf, providerEntryFor } from "./provider.ts";
+import { claudeTtyProvider } from "./provider.ts";
 
-const expected = providerEntryFor("/opt/paseo-plugins");
-
-test("builds the entry the adapter README documents", () => {
-  assert.deepEqual(expected, {
-    extends: "acp",
-    label: "Claude TTY",
-    command: ["/opt/paseo-plugins/apps/claude-tty-acp/bin/claude-tty-acp"],
-    params: { supportsMcpServers: false },
-  });
-});
-
-test("treats a missing entry as absent", () => {
-  assert.equal(classifyProviderEntry(undefined, expected), "absent");
-  assert.equal(classifyProviderEntry(null, expected), "absent");
-});
-
-test("matches this checkout regardless of the label", () => {
-  assert.equal(classifyProviderEntry(expected, expected), "matching");
-  assert.equal(classifyProviderEntry({ ...expected, label: "Claude" }, expected), "matching");
-  assert.equal(
-    classifyProviderEntry(
-      { ...expected, command: ["/opt/paseo-plugins/apps/../apps/claude-tty-acp/bin/claude-tty-acp"] },
-      expected,
-    ),
-    "matching",
+/**
+ * The catalogue is compiled into the adapter, so one key covers every workspace and collapses the
+ * daemon's `["target", cwd]` fallback — a throwaway adapter per distinct directory — to one fetch.
+ * What it must still tell apart is a rebuilt adapter, since that is where a new catalogue comes from.
+ */
+test("shares one catalogue across workspaces and gives a rebuilt adapter a key of its own", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "claude-tty-catalogue-"));
+  t.after(() => rm(home, { force: true, recursive: true }));
+  const checkout = path.join(home, "checkout");
+  const adapter = path.join(checkout, "apps", "claude-tty-acp");
+  await mkdir(path.join(adapter, "dist"), { recursive: true });
+  await writeFile(path.join(adapter, "package.json"), "{}");
+  await mkdir(path.join(home, "paseo"), { recursive: true });
+  await writeFile(
+    path.join(home, "paseo", "config.json"),
+    JSON.stringify({ plugins: { "claude-tty": { path: path.join(checkout, "plugins", "claude-tty") } } }),
   );
-});
+  process.env.PASEO_HOME = path.join(home, "paseo");
+  const key = async (cwd: string): Promise<string | undefined> =>
+    claudeTtyProvider().getCatalogCacheKey?.({ scope: "workspace", cwd });
 
-test("leaves environment variables a host set on the entry alone", () => {
-  const withEnv = { ...expected, env: { CLAUDE_BIN: "/usr/local/bin/claude", CLAUDE_TTY_ACP_IDLE_TIMEOUT_MS: "900000" } };
-  assert.equal(classifyProviderEntry(withEnv, expected), "matching");
-  assert.deepEqual(envOf(withEnv), { CLAUDE_BIN: "/usr/local/bin/claude", CLAUDE_TTY_ACP_IDLE_TIMEOUT_MS: "900000" });
-  assert.equal(envOf(expected), null);
-  assert.equal(envOf({ ...expected, env: "CLAUDE_BIN=claude" }), null);
-});
+  // An adapter nobody has built yet still answers with one key, so the failure is reported once.
+  const unbuilt = await key("/work/one");
+  assert.match(String(unbuilt), /:unbuilt$/);
+  assert.equal(await key("/work/two"), unbuilt);
 
-test("reports this adapter pointed elsewhere or configured differently as mismatched", () => {
-  assert.equal(
-    classifyProviderEntry({ ...expected, command: ["/srv/other/apps/claude-tty-acp/bin/claude-tty-acp"] }, expected),
-    "mismatched",
-  );
-  assert.equal(classifyProviderEntry({ ...expected, params: { supportsMcpServers: true } }, expected), "mismatched");
-  assert.equal(classifyProviderEntry({ ...expected, params: undefined }, expected), "mismatched");
-  assert.equal(classifyProviderEntry({ ...expected, extends: "claude" }, expected), "mismatched");
-});
+  const entry = path.join(adapter, "dist", "cli.js");
+  await writeFile(entry, "// built");
+  const built = await key("/work/one");
+  assert.notEqual(built, unbuilt);
+  assert.equal(await key("/work/two"), built);
 
-test("leaves an entry it does not recognise alone", () => {
-  assert.equal(classifyProviderEntry({ enabled: false }, expected), "foreign");
-  assert.equal(classifyProviderEntry({ extends: "acp", command: ["/usr/bin/trae"] }, expected), "foreign");
-  assert.equal(classifyProviderEntry({ extends: "acp", command: [] }, expected), "foreign");
-  assert.equal(classifyProviderEntry("traecli", expected), "foreign");
+  await writeFile(entry, "// built again, and longer than before");
+  assert.notEqual(await key("/work/one"), built);
 });

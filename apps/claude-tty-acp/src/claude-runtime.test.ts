@@ -65,7 +65,8 @@ function createConnection(updates: SessionNotification[]): AgentSideConnection {
     sessionUpdate: async (update: SessionNotification) => {
       updates.push(update);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
 }
 
 test("keeps three parallel PTYs, hooks, cancellation, and attachments isolated", async () => {
@@ -235,6 +236,7 @@ test("asks through ACP before accepting Claude workspace trust", async () => {
       permissionRequests.push(request);
       return { outcome: { outcome: "selected", optionId: "trust-workspace" } };
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
     const sessionId = args[args.indexOf("--session-id") + 1]!;
@@ -290,6 +292,7 @@ test("never confirms workspace trust unless Claude visibly selects Yes", async (
   const connection = {
     sessionUpdate: async () => undefined,
     requestPermission: async (): Promise<RequestPermissionResponse> => ({ outcome: { outcome: "selected", optionId: "trust-workspace" } }),
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const agent = new ClaudeTtyAgent(connection, {
     spawnPty: () => {
@@ -326,6 +329,7 @@ test("fails closed when Claude workspace trust is denied", async () => {
   const connection = {
     sessionUpdate: async () => undefined,
     requestPermission: async (): Promise<RequestPermissionResponse> => ({ outcome: { outcome: "selected", optionId: "deny-workspace" } }),
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const agent = new ClaudeTtyAgent(connection, {
     spawnPty: () => {
@@ -625,7 +629,8 @@ test("delivers the assistant text before an interactive hook prompts", async () 
       textWhenAsked.push(...assistantText(updates));
       return { outcome: { outcome: "selected", optionId: "answer-0" } };
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   agent = new ClaudeTtyAgent(connection, {
     spawnPty,
     runtimeRoot,
@@ -975,7 +980,7 @@ test("says nothing about the context when the session closes while the wait is r
         closing = agent.close();
       });
     },
-  } as AgentSideConnection;
+  } as unknown as AgentSideConnection;
   agent = new ClaudeTtyAgent(connection, { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, contextRefreshTimeoutMs: 500 });
 
   try {
@@ -1036,6 +1041,7 @@ test("keeps a stop that lands while the turn's last message is still in flight",
       const update = notification.update as { sessionUpdate?: string; content?: { text?: string } };
       if (update.sessionUpdate === "agent_message_chunk" && update.content?.text === "done") await agent.cancel({ sessionId });
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const spawnPty = (file: string, args: string[], options: IPtyForkOptions): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
     const pty = new FakePty(4000 + spawns.length);
@@ -1110,6 +1116,7 @@ test("does not let stopped waits count towards giving up on a session's readings
       const update = notification.update as { sessionUpdate?: string; content?: { text?: string } };
       if (stopEveryWait && update.sessionUpdate === "agent_message_chunk" && update.content?.text === "done") await agent.cancel({ sessionId });
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const spawnPty = (file: string, args: string[], options: IPtyForkOptions): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
     const pty = new FakePty(4200 + spawns.length);
@@ -1288,6 +1295,7 @@ test("leaves a session running while a card is still waiting on the person who h
   const connection = {
     sessionUpdate: async () => undefined,
     requestPermission: () => new Promise<RequestPermissionResponse>((resolve) => (answer = resolve)),
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   agent = new ClaudeTtyAgent(connection, {
     spawnPty,
@@ -2354,6 +2362,7 @@ test("asks through ACP before accepting Claude's bypass permissions disclaimer",
       permissionRequests.push(request);
       return { outcome: { outcome: "selected", optionId: "accept-bypass" } };
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
     const sessionId = args[args.indexOf("--session-id") + 1]!;
@@ -2413,6 +2422,7 @@ test("leaves a session in another mode alone when its screen only quotes the dis
       permissionRequests.push(request);
       return { outcome: { outcome: "selected", optionId: "accept-bypass" } };
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   agent = new ClaudeTtyAgent(connection, {
     spawnPty: (_file: string, args: string[]) => {
@@ -2451,6 +2461,7 @@ test("fails the start rather than run in another mode when the bypass disclaimer
   const connection = {
     sessionUpdate: async () => undefined,
     requestPermission: async (): Promise<RequestPermissionResponse> => ({ outcome: { outcome: "selected", optionId: "deny-bypass" } }),
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const agent = new ClaudeTtyAgent(connection, {
     spawnPty: () => {
@@ -2494,6 +2505,7 @@ test("lets a cancelled session go when nobody answers the bypass disclaimer", { 
       asked = true;
       return new Promise<RequestPermissionResponse>(() => undefined);
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const agent = new ClaudeTtyAgent(connection, {
     spawnPty: () => {

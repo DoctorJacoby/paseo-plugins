@@ -4,14 +4,15 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useCallback } from "react";
 import { ScrollView, Text, View } from "react-native";
 import * as contracts from "../shared/contracts.ts";
+import { PROVIDER_LABEL } from "../shared/provider.ts";
 import { DoctorSection } from "./doctor.tsx";
-import { InstallSection } from "./install.tsx";
 import { SessionsSection } from "./sessions.tsx";
 import { SettingsSection } from "./settings.tsx";
 import { SubagentsSection } from "./subagents.tsx";
-import { UninstallSection } from "./uninstall.tsx";
+import { RemoveStateSection } from "./uninstall.tsx";
+import { LegacyProviderSection } from "./upgrade.tsx";
 import { MAX_CONTENT_WIDTH, fontSize, leading, spacing } from "./theme.ts";
-import { Monospace, ReadingRow, adapterReading, claudeReading, providerReading } from "./status.tsx";
+import { Monospace, ReadingRow, adapterReading, claudeReading } from "./status.tsx";
 import { Card, Row, Section, usePalette } from "./ui.tsx";
 
 export const STATUS_QUERY_KEY = ["claude-tty", "status"];
@@ -63,15 +64,17 @@ export function ClaudeTtySurface({ theme, layout }: PluginSurfaceProps) {
               marginLeft: spacing[1],
             }}
           >
-            This plugin manages the adapter in the checkout it was installed from, so it needs its own
-            entry in the daemon configuration before it can do anything.
+            This plugin runs the adapter built inside the checkout it was installed from, and finds
+            that checkout through the daemon's own record of where it put this plugin.
           </Text>
         </Section>
       )}
 
+      {status.legacyProvider === null ? null : <LegacyProviderSection palette={palette} legacy={status.legacyProvider} />}
+
       <Section palette={palette} title="Adapter">
         <Card palette={palette}>
-          <ReadingRow palette={palette} title="Provider" reading={providerReading(status)} />
+          <Row palette={palette} title="Provider" hint={`Registered by this plugin as "${PROVIDER_LABEL}"`} />
           <ReadingRow palette={palette} title="Executable" reading={adapterReading(status)} divided />
           <Row
             palette={palette}
@@ -82,8 +85,6 @@ export function ClaudeTtySurface({ theme, layout }: PluginSurfaceProps) {
           />
         </Card>
       </Section>
-
-      <InstallSection palette={palette} status={status} onSettled={refreshStatus} />
 
       <DoctorSection palette={palette} />
 
@@ -112,7 +113,7 @@ export function ClaudeTtySurface({ theme, layout }: PluginSurfaceProps) {
         </Text>
       </Section>
 
-      <UninstallSection palette={palette} onSettled={refreshStatus} />
+      <RemoveStateSection palette={palette} onSettled={refreshStatus} />
     </ScrollView>
   );
 }

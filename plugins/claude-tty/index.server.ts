@@ -1,28 +1,29 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import * as contracts from "./shared/contracts.ts";
+import { claudeTtyProvider } from "./server/provider.ts";
 import {
   doctorHandler,
-  installStatusHandler,
   lastDoctorHandler,
   quarantineSessionHandler,
   readSubagentHandler,
   releaseLockHandler,
   releaseStaleLocksHandler,
+  removeStateHandler,
   sessionsHandler,
   settingsHandler,
-  startInstallHandler,
   statusHandler,
   stopSessionHandler,
   subagentsHandler,
-  uninstallHandler,
 } from "./server/handlers.ts";
 
 export default function contribute(server: PluginServerContext) {
+  // Registration has to be synchronous: the daemon reads the provider list out of the reply to its
+  // initialize message, and connects the provider milliseconds later.
+  server.registerProvider(claudeTtyProvider());
+
   server.handle(contracts.getStatus, (_input, { paseo }) => statusHandler(paseo));
   server.handle(contracts.setSettings, (input, { paseo }) => settingsHandler(paseo, input));
-  server.handle(contracts.startInstall, (input, { paseo }) => startInstallHandler(paseo, input));
-  server.handle(contracts.getInstall, () => installStatusHandler());
-  server.handle(contracts.runDoctor, (_input, { paseo }) => doctorHandler(paseo));
+  server.handle(contracts.runDoctor, () => doctorHandler());
   server.handle(contracts.getDoctor, () => lastDoctorHandler());
   server.handle(contracts.getSessions, (_input, { paseo }) => sessionsHandler(paseo));
   server.handle(contracts.releaseLock, (input, { paseo }) => releaseLockHandler(paseo, input));
@@ -31,7 +32,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(contracts.getSubagents, () => subagentsHandler());
   server.handle(contracts.readSubagent, (input) => readSubagentHandler(input));
   server.handle(contracts.releaseStaleLocks, (_input, { paseo }) => releaseStaleLocksHandler(paseo));
-  server.handle(contracts.runUninstall, (input, { paseo }) => uninstallHandler(paseo, input));
+  server.handle(contracts.removeState, () => removeStateHandler());
 
   return () => {};
 }

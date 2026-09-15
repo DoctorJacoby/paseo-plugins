@@ -23,10 +23,6 @@ export function parseDiagnosticsReport(stdout: string): DiagnosticsReport | null
   return { version: typeof record.version === "string" ? record.version : null, ok: record.ok, checks };
 }
 
-export function failedChecks(report: DiagnosticsReport): DiagnosticCheck[] {
-  return report.checks.filter((check) => !check.ok);
-}
-
 function isCheck(value: unknown): value is DiagnosticCheck {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;

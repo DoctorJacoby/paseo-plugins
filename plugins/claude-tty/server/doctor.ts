@@ -1,12 +1,9 @@
 import os from "node:os";
-import type { PaseoApi } from "@getpaseo/client";
 import type { DoctorPayload } from "../shared/contracts.ts";
 import { parseDiagnosticsReport } from "./diagnostics.ts";
 import { adapterBinaryPath } from "./paths.ts";
-import { PROVIDER_ID, commandOf } from "./provider.ts";
 import { runCommand } from "./exec.ts";
-import { messageOf, resolveRepoRoot } from "./checkout.ts";
-import { readProviderEntry } from "./status.ts";
+import { resolveRepoRoot } from "./checkout.ts";
 
 const DIAGNOSE_TIMEOUT_MS = 60_000;
 
@@ -17,15 +14,15 @@ export function lastDoctorReport(): DoctorPayload | null {
   return lastReport;
 }
 
-export async function runDoctor(paseo: PaseoApi): Promise<DoctorPayload> {
-  const [repo, existing] = await Promise.all([resolveRepoRoot(paseo), readProviderEntry(paseo)]);
-  /** What the daemon would launch, which is the only executable worth diagnosing. */
-  const binary = commandOf(existing)?.[0] ?? (repo.root === null ? null : adapterBinaryPath(repo.root));
-  const [adapter, daemon] = await Promise.all([
-    checkAdapter(binary, repo.root ?? os.tmpdir()),
-    readDaemonDiagnostic(paseo),
-  ]);
-  lastReport = { ranAt: Date.now(), adapter: { binary, ...adapter }, daemon };
+/**
+ * The daemon reports a session that would not open, but the ACP shim drops the adapter's stderr, so
+ * the adapter's own host checks — Claude on the daemon's `PATH` above all — are only readable by
+ * running them.
+ */
+export async function runDoctor(): Promise<DoctorPayload> {
+  const repo = await resolveRepoRoot();
+  const binary = repo.root === null ? null : adapterBinaryPath(repo.root);
+  lastReport = { ranAt: Date.now(), adapter: { binary, ...(await checkAdapter(binary, repo.root ?? os.tmpdir())) } };
   return lastReport;
 }
 
@@ -44,13 +41,3 @@ async function checkAdapter(binary: string | null, cwd: string): Promise<Omit<Do
   }
   return { ok: report.ok, problem: null, checks: report.checks };
 }
-
-async function readDaemonDiagnostic(paseo: PaseoApi): Promise<DoctorPayload["daemon"]> {
-  try {
-    const payload = await paseo.providers.diagnostic(PROVIDER_ID);
-    return { diagnostic: payload.diagnostic, error: null };
-  } catch (error) {
-    return { diagnostic: null, error: messageOf(error) };
-  }
-}
-

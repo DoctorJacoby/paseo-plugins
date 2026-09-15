@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk";
-import { TranscriptTranslator } from "./transcript-translator.ts";
+import { TOOL_CALL_MIRROR_METHOD, TranscriptTranslator } from "./transcript-translator.ts";
 
 test("translates messages, reasoning, tools, plans, usage, images, and system activity", async () => {
   const notifications: SessionNotification[] = [];
@@ -9,7 +9,8 @@ test("translates messages, reasoning, tools, plans, usage, images, and system ac
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const records = [
     {
@@ -78,7 +79,8 @@ test("suppresses a transcript answer already emitted from the Stop fallback", as
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
 
   translator.suppressNextAssistantText("Hello from Claude");
@@ -100,7 +102,8 @@ test("renders question tool calls as readable text instead of raw JSON", async (
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const input = {
     questions: [
@@ -145,7 +148,8 @@ test("keeps an asynchronous agent's tool call open and streams the work it does"
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
 
   await translator.translate([
@@ -220,7 +224,8 @@ test("shows a subagent's steps that arrived before its launch was read, and its 
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
 
   await translator.translateSubagent("a1", [
@@ -272,7 +277,8 @@ test("carries a nested subagent's earlier steps onto the card of the agent that 
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
 
   // Transcripts are read in name order, so a nested agent is routinely seen before its spawner.
@@ -316,7 +322,7 @@ test("carries a nested subagent's earlier steps onto the card of the agent that 
 });
 
 test("counts the agents a turn is still waiting on, and ignores the ones history only remembers", async () => {
-  const connection = { sessionUpdate: async () => undefined } as unknown as AgentSideConnection;
+  const connection = { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const launch = (toolCallId: string, agentId: string, running: boolean) => [
     {
@@ -360,7 +366,7 @@ test("counts the agents a turn is still waiting on, and ignores the ones history
 });
 
 test("counts the background commands a turn is waiting on, and lets go of one that reports", async () => {
-  const connection = { sessionUpdate: async () => undefined } as unknown as AgentSideConnection;
+  const connection = { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const launch = (toolCallId: string, taskId: string) => [
     {
@@ -410,7 +416,7 @@ test("counts the background commands a turn is waiting on, and lets go of one th
 });
 
 test("stops counting a background command a turn gave up on, and one whose session has stopped", async () => {
-  const connection = { sessionUpdate: async () => undefined } as unknown as AgentSideConnection;
+  const connection = { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const launch = (toolCallId: string, taskId: string) => [
     {
@@ -451,6 +457,7 @@ test("lets go of a background command whose report was queued because Claude was
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const report =
@@ -499,6 +506,7 @@ test("does not read a report for a background command a turn gave up on as an ag
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
 
@@ -548,6 +556,7 @@ test("lets go of an agent whose report was queued because Claude was busy when i
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const report =
@@ -599,6 +608,7 @@ test("lets go of an agent whose queued report was written as blocks", async () =
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
 
@@ -651,6 +661,7 @@ test("puts a message queued while Claude was working into the conversation, once
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const typed = {
@@ -710,7 +721,7 @@ test("puts a message queued while Claude was working into the conversation, once
 });
 
 test("does not wait again on an agent whose launch a rewrite replayed", async () => {
-  const connection = { sessionUpdate: async () => undefined } as unknown as AgentSideConnection;
+  const connection = { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const launch = [
     {
@@ -745,7 +756,7 @@ test("does not wait again on an agent whose launch a rewrite replayed", async ()
 });
 
 test("does not wait again on an agent a turn gave up on when a rewrite replays its launch", async () => {
-  const connection = { sessionUpdate: async () => undefined } as unknown as AgentSideConnection;
+  const connection = { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const launch = [
     {
@@ -779,6 +790,7 @@ test("settles a subagent whose launch is no longer in the transcript, so it stop
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const steps = (agentId: string) => [
@@ -816,7 +828,8 @@ test("leaves a synchronous agent's report alone when the session it ran in stops
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
 
   await translator.translate([
@@ -851,7 +864,8 @@ test("closes the tool calls a stopped session left running, and leaves the ones 
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
 
   await translator.translate([
@@ -913,7 +927,7 @@ test("closes the tool calls a stopped session left running, and leaves the ones 
 });
 
 test("reads the session's last sign of life from whatever moved last, Claude's own tools included", async () => {
-  const connection = { sessionUpdate: async () => undefined } as unknown as AgentSideConnection;
+  const connection = { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   assert.equal(translator.activityAt, 0);
   assert.equal(translator.assistantActivityAt, 0);
@@ -954,7 +968,8 @@ test("stops counting an agent the session stopped, which never reports and never
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   translator.trackBackgroundWork();
 
@@ -1010,7 +1025,8 @@ test("leaves an agent running when the stop that named it failed", async () => {
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
-  } as AgentSideConnection;
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   translator.trackBackgroundWork();
 
@@ -1042,7 +1058,7 @@ test("leaves an agent running when the stop that named it failed", async () => {
 });
 
 test("stops counting a background command the session stopped, and goes on counting one whose stop failed", async () => {
-  const connection = { sessionUpdate: async () => undefined } as unknown as AgentSideConnection;
+  const connection = { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const stop = (toolCallId: string, taskId: string, result: Record<string, unknown>) => [
     {
@@ -1086,12 +1102,80 @@ test("stops counting a background command the session stopped, and goes on count
   assert.ok(translator.backgroundShellActivityAt >= launchedAt);
 });
 
+test("mirrors every tool-call update as a vendor notification, ahead of the update itself", async () => {
+  const sent: string[] = [];
+  const mirrored: Record<string, unknown>[] = [];
+  const connection = {
+    sessionUpdate: async (notification: SessionNotification) => {
+      sent.push(`update:${notification.update.sessionUpdate}`);
+    },
+    extNotification: async (method: string, params: Record<string, unknown>) => {
+      sent.push(`mirror:${method}`);
+      mirrored.push(params);
+    },
+  } as unknown as AgentSideConnection;
+  const translator = new TranscriptTranslator("session", "/work/repo", connection);
+
+  await translator.translate([
+    {
+      type: "assistant",
+      uuid: "assistant-1",
+      message: {
+        content: [
+          { type: "text", text: "running it" },
+          { type: "tool_use", id: "bash-1", name: "Bash", input: { command: "npm test" } },
+        ],
+      },
+    },
+    {
+      type: "user",
+      uuid: "result-1",
+      message: { content: [{ type: "tool_result", tool_use_id: "bash-1", content: [{ type: "text", text: "3 passing" }] }] },
+    },
+  ]);
+
+  // Nothing but a tool call is mirrored, and each mirror goes out before the update it copies.
+  assert.deepEqual(sent, [
+    "update:agent_message_chunk",
+    `mirror:${TOOL_CALL_MIRROR_METHOD}`,
+    "update:tool_call",
+    `mirror:${TOOL_CALL_MIRROR_METHOD}`,
+    "update:tool_call_update",
+  ]);
+  // The whole update, because the fields the plugin bridge drops are exactly the ones a card is made of.
+  assert.deepEqual(mirrored, [
+    {
+      sessionId: "session",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "bash-1",
+        title: "Bash: npm test",
+        kind: "execute",
+        status: "in_progress",
+        rawInput: { command: "npm test" },
+        content: [{ type: "content", content: { type: "text", text: "npm test" } }],
+      },
+    },
+    {
+      sessionId: "session",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "bash-1",
+        status: "completed",
+        rawOutput: [{ type: "text", text: "3 passing" }],
+        content: [{ type: "content", content: { type: "text", text: "3 passing" } }],
+      },
+    },
+  ]);
+});
+
 test("sends an edit's diff again with its result, rather than the line saying the file was updated", async () => {
   const notifications: SessionNotification[] = [];
   const connection = {
     sessionUpdate: async (notification: SessionNotification) => {
       notifications.push(notification);
     },
+    extNotification: async () => undefined,
   } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
   const updated = (file: string) => [{ type: "text", text: `The file ${file} has been updated successfully.` }];

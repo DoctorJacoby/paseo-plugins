@@ -6,9 +6,8 @@ import { writeSettings } from "./settings-store.ts";
 import { readStatus } from "./status.ts";
 
 /**
- * Nothing here touches the provider entry: the setting is the plugin's own, and the adapter reads it
- * per suspension. That is also why there is no "install or repair first" gate, and why the value
- * applies to sessions that are already connected rather than only to the next adapter launch.
+ * The setting is the plugin's own and the adapter re-reads it per suspension, so the value reaches
+ * sessions that are already connected rather than only the next adapter launch.
  */
 export async function updateSettings(paseo: PaseoApi, idleTimeoutMs: number): Promise<StatusPayload> {
   if (parseIdleTimeout(idleTimeoutMs) === null) {
