@@ -1,4 +1,5 @@
 import { useRpc } from "@getpaseo/plugin/client";
+import { SettingsCard, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import React from "react";
 import { Text, View } from "react-native";
@@ -7,7 +8,7 @@ import type { SubagentsPayload } from "../shared/contracts.ts";
 import { lastStepLabel } from "../shared/subagents.ts";
 import { fontSize, leading, spacing, type Palette } from "./theme.ts";
 import { Monospace } from "./status.tsx";
-import { Card, Disclosure, MONO_FONT, Row, Section } from "./ui.tsx";
+import { Disclosure, MONO_FONT } from "./ui.tsx";
 
 export const SUBAGENTS_QUERY_KEY = ["claude-tty", "subagents"];
 const REFETCH_MS = 5_000;
@@ -25,11 +26,11 @@ export function SubagentsSection({ palette }: { palette: Palette }) {
   const payload = query.data ?? null;
 
   return (
-    <Section palette={palette} title="Subagents">
+    <SettingsSection title="Subagents">
       {payload === null ? null : payload.sessions.length === 0 ? (
-        <Card palette={palette}>
-          <Row palette={palette} title="No subagents" hint="Nothing has been launched in the open sessions" dimmed />
-        </Card>
+        <SettingsCard>
+          <SettingsRow label="No subagents" hint="Nothing has been launched in the open sessions" />
+        </SettingsCard>
       ) : (
         payload.sessions.map((session) => (
           <View key={session.sessionId} style={{ gap: spacing[2] }}>
@@ -67,7 +68,7 @@ export function SubagentsSection({ palette }: { palette: Palette }) {
         and in the tool call that launched it. Only open sessions are listed: a subagent runs inside
         its session's Claude process and stops with it.
       </Text>
-    </Section>
+    </SettingsSection>
   );
 }
 

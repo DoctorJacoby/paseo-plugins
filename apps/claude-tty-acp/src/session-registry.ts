@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { AgentSideConnection, ContentBlock, PromptResponse, SessionConfigOption } from "@agentclientprotocol/sdk";
+import { AUTO_ACCEPT_CONFIG_ID, readAutoAcceptDefault } from "./auto-accept.ts";
 import { ClaudeRuntime, type RuntimeDependencies } from "./claude-runtime.ts";
 import { discoverCommands } from "./commands.ts";
 import { HookServer } from "./hook-server.ts";
@@ -32,6 +33,8 @@ export type SessionRegistryDependencies = RuntimeDependencies & {
    * Left out in production, where the timeout is read per suspension so a change in Paseo reaches live sessions.
    */
   idleTimeoutMs?: number;
+  /** Left out in production, where the host settings are read at each request so a change in Paseo reaches live sessions. */
+  autoAcceptDefault?: (mode: string) => Promise<boolean>;
 };
 
 /** How long a suspension stands aside when the session is busy or someone still has a card to answer. */
@@ -44,6 +47,7 @@ type SessionOptions = {
   model: string;
   mode: string;
   effort: string;
+  autoAccept: boolean | null;
   persisted: boolean;
 };
 
@@ -55,11 +59,16 @@ export class ClaudeSession {
   private model: string;
   private mode: string;
   private effort: string;
+  /** Null follows the host settings for the session's mode; a boolean is what someone switched this agent to. */
+  private autoAccept: boolean | null;
+  /** What the host settings said at the last read, which is what a session following them shows. */
+  private defaultAutoAccept = false;
   private persisted: boolean;
   private readonly connection: AgentSideConnection;
   private readonly hooks: HookServer;
   private readonly runtimeDependencies: RuntimeDependencies;
   private readonly fixedIdleTimeoutMs: number | undefined;
+  private readonly readAutoAcceptDefault: (mode: string) => Promise<boolean>;
   private readonly stateStore: StateStore;
   private readonly lock: SessionLock;
   private readonly translator: TranscriptTranslator;
@@ -83,12 +92,14 @@ export class ClaudeSession {
     this.model = options.model;
     this.mode = options.mode;
     this.effort = options.effort;
+    this.autoAccept = options.autoAccept;
     this.persisted = options.persisted;
     this.connection = connection;
     this.hooks = hooks;
-    const { idleTimeoutMs, ...runtimeDependencies } = dependencies;
+    const { idleTimeoutMs, autoAcceptDefault, ...runtimeDependencies } = dependencies;
     this.runtimeDependencies = runtimeDependencies;
     this.fixedIdleTimeoutMs = idleTimeoutMs;
+    this.readAutoAcceptDefault = autoAcceptDefault ?? ((mode) => readAutoAcceptDefault(mode));
     this.stateStore = stateStore;
     this.lock = new SessionLock(this.id, stateStore.locksDirectory);
     this.translator = new TranscriptTranslator(this.id, this.cwd, connection);
@@ -107,7 +118,7 @@ export class ClaudeSession {
   }
 
   get configOptions(): SessionConfigOption[] {
-    return configOptions(this.model, this.effort);
+    return configOptions(this.model, this.effort, this.autoAccept ?? this.defaultAutoAccept);
   }
 
   prompt(content: ContentBlock[]): Promise<PromptResponse> {
@@ -122,6 +133,7 @@ export class ClaudeSession {
         model: this.model,
         mode: this.mode,
         effort: this.effort,
+        autoAccept: () => this.refreshAutoAccept({ publish: true }),
         translator: this.translator,
         onClaudeSessionChange: async (claudeSessionId) => {
           this.currentClaudeSessionId = claudeSessionId;
@@ -176,6 +188,8 @@ export class ClaudeSession {
       if (this.persisted) await this.save();
       await this.runtime?.reconfigure(this.model, this.mode, this.effort);
       await this.connection.sessionUpdate({ sessionId: this.id, update: { sessionUpdate: "current_mode_update", currentModeId: mode } });
+      // Bypass Permissions has a setting of its own, so a session following the settings may have just changed its answer.
+      await this.refreshAutoAccept({ publish: true });
     });
   }
 
@@ -198,11 +212,41 @@ export class ClaudeSession {
    * conversation it was in — which is why an active turn is refused rather than queued.
    */
   async setConfigOption(configId: string, value: string | boolean): Promise<SessionConfigOption[]> {
+    if (configId === AUTO_ACCEPT_CONFIG_ID) {
+      if (typeof value !== "boolean") throw new Error(`Configuration option ${configId} takes a boolean`);
+      await this.setAutoAccept(value);
+      return this.configOptions;
+    }
     if (typeof value !== "string") throw new Error(`Configuration option ${configId} takes the id of an option, not a boolean`);
     if (configId === MODEL_CONFIG_ID) await this.setModel(value);
     else if (configId === EFFORT_CONFIG_ID) await this.setEffort(value);
     else throw new Error(`Unsupported configuration option ${configId}`);
     return this.configOptions;
+  }
+
+  /**
+   * Whether the next permission request is answered without a card. A session nobody has switched reads
+   * the host settings again each time and tells Paseo when the answer moved, so the toggle on the agent
+   * shows what the next request gets. A settings document that cannot be read asks.
+   */
+  async refreshAutoAccept(options: { publish: boolean }): Promise<boolean> {
+    if (this.autoAccept !== null) return this.autoAccept;
+    let resolved: boolean;
+    try {
+      resolved = await this.readAutoAcceptDefault(this.mode);
+    } catch (error) {
+      writeLog({ level: "warn", message: "Could not read the auto-accept settings; asking instead", sessionId: this.id, error: errorMessage(error) });
+      resolved = false;
+    }
+    if (resolved !== this.defaultAutoAccept) {
+      this.defaultAutoAccept = resolved;
+      if (options.publish) {
+        await this.publishConfigOptions().catch((error: unknown) => {
+          writeLog({ level: "warn", message: "Failed to publish the auto-accept toggle", sessionId: this.id, error: errorMessage(error) });
+        });
+      }
+    }
+    return resolved;
   }
 
   cancel(): void {
@@ -214,6 +258,16 @@ export class ClaudeSession {
     await this.runtime?.close();
     this.runtime = null;
     await this.lock.release();
+  }
+
+  /**
+   * Kept out of the queue the selectors wait in, because a prompt holds that queue for its whole turn and
+   * this is most wanted in the middle of one. Nothing restarts: the next request reads the new value.
+   */
+  private async setAutoAccept(value: boolean): Promise<void> {
+    this.autoAccept = value;
+    writeLog({ level: "info", message: `Switched auto-accept ${value ? "on" : "off"}`, sessionId: this.id });
+    if (this.persisted) await this.save();
   }
 
   /** The answer to `session/set_config_option` already carries these, so this is for the model a `session/set_model` changed. */
@@ -230,6 +284,7 @@ export class ClaudeSession {
       model: this.model,
       mode: this.mode,
       effort: this.effort,
+      ...(this.autoAccept === null ? {} : { autoAccept: this.autoAccept }),
       lastActivity: Date.now(),
     };
     await this.stateStore.save(state);
@@ -354,6 +409,7 @@ export class SessionRegistry {
       model: INHERIT_MODEL_ID,
       mode: "default",
       effort: INHERIT_EFFORT_ID,
+      autoAccept: null,
       persisted: false,
     });
   }
@@ -378,6 +434,7 @@ export class SessionRegistry {
       model,
       mode,
       effort,
+      autoAccept: state.autoAccept ?? null,
       persisted: true,
     });
     try {
@@ -415,4 +472,8 @@ export class SessionRegistry {
     this.sessions.set(session.id, session);
     return session;
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

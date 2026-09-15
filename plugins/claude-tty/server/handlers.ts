@@ -12,14 +12,9 @@ import { listSessions, quarantineSession, releaseLock, releaseStaleLocks, stopSe
 import { listSubagents, readSubagentTranscript } from "./subagents.ts";
 import { removeState } from "./uninstall.ts";
 import { readStatus } from "./status.ts";
-import { updateSettings } from "./settings.ts";
 
 export function statusHandler(paseo: PaseoApi): Promise<StatusPayload> {
   return readStatus(paseo);
-}
-
-export function settingsHandler(paseo: PaseoApi, input: { idleTimeoutMs: number }): Promise<StatusPayload> {
-  return updateSettings(paseo, input.idleTimeoutMs);
 }
 
 export function doctorHandler(): Promise<DoctorPayload> {

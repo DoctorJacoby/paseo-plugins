@@ -1,5 +1,6 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
+import { SettingsCard, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useCallback } from "react";
 import { ScrollView, Text, View } from "react-native";
@@ -7,18 +8,17 @@ import * as contracts from "../shared/contracts.ts";
 import { PROVIDER_LABEL } from "../shared/provider.ts";
 import { DoctorSection } from "./doctor.tsx";
 import { SessionsSection } from "./sessions.tsx";
-import { SettingsSection } from "./settings.tsx";
 import { SubagentsSection } from "./subagents.tsx";
 import { RemoveStateSection } from "./uninstall.tsx";
 import { LegacyProviderSection } from "./upgrade.tsx";
 import { MAX_CONTENT_WIDTH, fontSize, leading, spacing } from "./theme.ts";
 import { Monospace, ReadingRow, adapterReading, claudeReading } from "./status.tsx";
-import { Card, Row, Section, usePalette } from "./ui.tsx";
+import { usePalette } from "./ui.tsx";
 
 export const STATUS_QUERY_KEY = ["claude-tty", "status"];
 const REFETCH_MS = 5_000;
 
-export function ClaudeTtySurface({ theme, layout }: PluginSurfaceProps) {
+export function ClaudeTtySurface({ theme, layout, navigation }: PluginSurfaceProps) {
   const palette = usePalette(theme);
   const queryClient = useQueryClient();
   const getStatus = useRpc(contracts.getStatus);
@@ -50,11 +50,10 @@ export function ClaudeTtySurface({ theme, layout }: PluginSurfaceProps) {
         padding: layout.compact ? spacing[3] : spacing[4],
         paddingTop: spacing[6],
         paddingBottom: spacing[8],
-        gap: spacing[6],
       }}
     >
       {status.problem === null ? null : (
-        <Section palette={palette} title="Checkout">
+        <SettingsSection title="Checkout">
           <Monospace palette={palette} text={status.problem} />
           <Text
             style={{
@@ -67,39 +66,31 @@ export function ClaudeTtySurface({ theme, layout }: PluginSurfaceProps) {
             This plugin runs the adapter built inside the checkout it was installed from, and finds
             that checkout through the daemon's own record of where it put this plugin.
           </Text>
-        </Section>
+        </SettingsSection>
       )}
 
       {status.legacyProvider === null ? null : <LegacyProviderSection palette={palette} legacy={status.legacyProvider} />}
 
-      <Section palette={palette} title="Adapter">
-        <Card palette={palette}>
-          <Row palette={palette} title="Provider" hint={`Registered by this plugin as "${PROVIDER_LABEL}"`} />
-          <ReadingRow palette={palette} title="Executable" reading={adapterReading(status)} divided />
-          <Row
-            palette={palette}
-            title="Checkout"
-            hint={status.repoRoot ?? "Unknown"}
-            dimmed={status.repoRoot === null}
-            divided
-          />
-        </Card>
-      </Section>
+      <SettingsSection title="Adapter">
+        <SettingsCard>
+          <SettingsRow label="Provider" hint={`Registered by this plugin as "${PROVIDER_LABEL}"`} />
+          <ReadingRow palette={palette} title="Executable" reading={adapterReading(status)} />
+          <SettingsRow label="Checkout" hint={status.repoRoot ?? "Unknown"} />
+        </SettingsCard>
+      </SettingsSection>
 
       <DoctorSection palette={palette} />
 
-      <SettingsSection palette={palette} status={status} />
-
-      <SessionsSection palette={palette} />
+      <SessionsSection palette={palette} navigation={navigation} />
 
       <SubagentsSection palette={palette} />
 
-      <Section palette={palette} title="This host">
-        <Card palette={palette}>
-          <Row palette={palette} title="Node.js" hint={status.host.node} />
-          <ReadingRow palette={palette} title="Claude Code" reading={claudeReading(status)} divided />
-          <Row palette={palette} title="State directory" hint={status.stateDirectory} divided />
-        </Card>
+      <SettingsSection title="This host">
+        <SettingsCard>
+          <SettingsRow label="Node.js" hint={status.host.node} />
+          <ReadingRow palette={palette} title="Claude Code" reading={claudeReading(status)} />
+          <SettingsRow label="State directory" hint={status.stateDirectory} />
+        </SettingsCard>
         <Text
           style={{
             color: palette.foregroundMuted,
@@ -111,7 +102,7 @@ export function ClaudeTtySurface({ theme, layout }: PluginSurfaceProps) {
           Everything here is local to the host running this daemon. Selecting another host in Paseo
           shows that host's own answer.
         </Text>
-      </Section>
+      </SettingsSection>
 
       <RemoveStateSection palette={palette} onSettled={refreshStatus} />
     </ScrollView>

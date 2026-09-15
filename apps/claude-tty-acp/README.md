@@ -73,8 +73,9 @@ The next prompt launches `claude --resume <id>` automatically, so the conversati
 Quiet is observed rather than inferred from prompts: the clock runs from the last thing the session actually did, whether that was the end of a prompt, a hook Claude called, a record it wrote, a turn it was woken for by a task notification, or a step one of its background agents took.
 A prompt is only what Paseo asked for; Claude goes on working after one — answering for an agent that reported, launching the next — and a suspension measured from the prompt alone stopped exactly that work an hour into it, mid-run.
 
-The timeout is read at each suspension rather than once at startup: `CLAUDE_TTY_ACP_IDLE_TIMEOUT_MS` if it is set, otherwise `idleTimeoutMs` in `${XDG_CACHE_HOME:-~/.cache}/paseo-plugins/claude-tty/settings.json`, which is what the Claude TTY plugin's panel writes.
-Reading it per suspension is what lets a change in that panel reach a session that is already connected, and it is also why an unreadable file or a malformed variable leaves the session running rather than taking the adapter down.
+The timeout is read at each suspension rather than once at startup: `CLAUDE_TTY_ACP_IDLE_TIMEOUT_MS` if it is set, otherwise `values.idleTimeoutMs` in the JSON document named by `--settings-file`, which is where Paseo stores the Claude TTY plugin's settings and which that plugin passes when it spawns the adapter.
+Reading it per suspension is what lets a change on that settings screen reach a session that is already connected, and it is also why an unreadable document or a malformed variable leaves the session running rather than taking the adapter down.
+An adapter started without `--settings-file` — by hand, or by anything that is not that plugin — has the variable and the default and nothing else.
 
 A suspension waits for its session to be genuinely idle. It stands aside while a turn is running and while a permission or question card is still waiting for an answer — stopping Claude then would cancel the request behind that card and leave it on screen in Paseo answering to nothing — and a suspension that fails re-arms rather than giving up, because giving up once would keep that process alive for the rest of its life.
 
@@ -98,6 +99,17 @@ Changing one while idle restarts and resumes Claude with deterministic flags, an
 All three are published twice, because the two ACP bridges Paseo can run this adapter on read different fields.
 `session/new` answers with the older `models` and `modes` state *and* with `configOptions` carrying a `model` selector and a `thought_level` one, and the adapter serves both `session/set_model` and `session/set_config_option`.
 The daemon's own bridge prefers `models` and takes the effort levels only from the config options; the bridge a Paseo plugin provider runs on reads `configOptions` and nothing else, and would show an empty model picker without them.
+
+### Auto Accept
+
+`configOptions` also carries `auto_accept`, a boolean the plugin provider's bridge shows as a toggle on the agent, with the ID Paseo gives its own ACP providers' toggle.
+While it is on, a `PermissionRequest` is answered with Allow once instead of a card, and none of Claude's permission suggestions are applied, so switching it off again leaves no rule behind.
+That covers the prompts Claude Code keeps even in Bypass Permissions mode, such as a removal of the working directory's contents; `AskUserQuestion` and `ExitPlanMode` are for a person and still raise their cards.
+
+A session nobody has switched follows the plugin's settings for its current mode: `values.bypassAutoAccept` (`on` or `off`) for a Bypass Permissions session, and otherwise `values.autoAccept`, both in the document named by `--settings-file`.
+They are read again at every request and whenever the mode changes, and the session publishes a `config_option_update` when the answer moves, so the toggle shows what the next request gets.
+Without a readable document the answer is off.
+Switching the toggle is taken even mid-turn, restarts nothing, and is saved with the session, after which the settings no longer apply to it.
 
 ## Prompt content
 
@@ -212,7 +224,7 @@ The adapter runs a single loopback HTTP server whose URL carries a per-process s
 
 `Stop`, `StopFailure` and `SessionEnd` end the turn with `end_turn`, `refusal` and `cancelled`, each first flushing the transcript until the file stops growing so the updates land before the turn does.
 
-`PermissionRequest` becomes an ACP permission request offering Allow once, Claude's own permission suggestions as always-allow options, and Deny, and the answer becomes the hook's decision.
+`PermissionRequest` becomes an ACP permission request offering Allow once, Claude's own permission suggestions as always-allow options, and Deny, and the answer becomes the hook's decision — unless [Auto Accept](#auto-accept) is on, which answers Allow once without asking.
 `PreToolUse` intercepts two tools before they run: `AskUserQuestion` renders as permission cards, and `ExitPlanMode` renders as a plan approval.
 
 ### State on disk

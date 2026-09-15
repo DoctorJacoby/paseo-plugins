@@ -12,6 +12,8 @@ export type PersistedSession = {
   mode: string;
   /** Absent in a file written before the effort selector existed, which reads as the default effort. */
   effort?: string;
+  /** Present only once someone has switched Auto Accept on this session; absent follows the host settings. */
+  autoAccept?: boolean;
   lastActivity: number;
 };
 
@@ -78,6 +80,7 @@ function isPersistedSession(value: unknown): value is PersistedSession {
     typeof record.model === "string" &&
     typeof record.mode === "string" &&
     (record.effort === undefined || typeof record.effort === "string") &&
+    (record.autoAccept === undefined || typeof record.autoAccept === "boolean") &&
     typeof record.lastActivity === "number"
   );
 }

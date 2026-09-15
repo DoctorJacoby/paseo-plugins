@@ -1,8 +1,11 @@
+import { defineSettings } from "@getpaseo/plugin";
+import { z } from "zod";
+
 /**
- * These three are mirrored by `apps/claude-tty-acp/src/idle-timeout.ts`, which reads the settings
- * file this plugin writes; the adapter is bundled from its own package and cannot import them.
- * Keep the two copies in step: a `MAX_IDLE_TIMEOUT_MS` that drifts lets this side save a value the
- * adapter then refuses.
+ * These three are mirrored by `apps/claude-tty-acp/src/idle-timeout.ts`, which reads the document the
+ * daemon stores for the definition below; the adapter is bundled from its own package and cannot
+ * import them. Keep the two copies in step: a `MAX_IDLE_TIMEOUT_MS` that drifts lets this side save a
+ * value the adapter then refuses.
  */
 export const IDLE_TIMEOUT_ENV = "CLAUDE_TTY_ACP_IDLE_TIMEOUT_MS";
 export const DEFAULT_IDLE_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -18,15 +21,41 @@ export const IDLE_TIMEOUT_OPTIONS = [
   { value: 0, label: "Never" },
 ] as const;
 
-export type ClaudeTtySettings = {
-  /** Zero keeps every native Claude process alive until its session closes. */
-  idleTimeoutMs: number;
-};
+/**
+ * What a Bypass Permissions session starts its Auto Accept toggle from. The adapter mirrors the keys and
+ * these values in `apps/claude-tty-acp/src/auto-accept.ts`; keep the two in step.
+ */
+export const BYPASS_AUTO_ACCEPT_OPTIONS = [
+  { value: "inherit", label: "Same as other sessions" },
+  { value: "on", label: "On" },
+  { value: "off", label: "Off" },
+] as const;
 
-export type StoredState = {
-  version: 1;
-  settings: ClaudeTtySettings;
-};
+/** Names the document the daemon keeps at `$PASEO_HOME/plugin-settings/claude-tty/<id>.json`. */
+export const SETTINGS_ID = "settings";
+
+/**
+ * The host owns the store: it validates, writes atomically and tells every connected client, so this
+ * plugin neither reads nor writes the file. What it does is hand the adapter the path.
+ */
+export const settingsDocument = defineSettings({
+  id: SETTINGS_ID,
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    /** Zero keeps every native Claude process alive until its session closes. */
+    idleTimeoutMs: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_IDLE_TIMEOUT_MS)
+      .default(DEFAULT_IDLE_TIMEOUT_MS),
+    /** Where an agent's Auto Accept toggle starts until someone switches it on that agent. */
+    autoAccept: z.boolean().default(false),
+    /** Overrides `autoAccept` for sessions in Bypass Permissions mode, unless it inherits. */
+    bypassAutoAccept: z.enum(["inherit", "on", "off"]).default("inherit"),
+  }),
+});
 
 /** Decimal integers only, matching the adapter: `Number` would also take `0x1c` and `1e3`. */
 export function parseIdleTimeout(raw: unknown): number | null {
@@ -38,12 +67,4 @@ export function parseIdleTimeout(raw: unknown): number | null {
   if (!/^\d+$/.test(trimmed)) return null;
   const value = Number(trimmed);
   return Number.isSafeInteger(value) && value <= MAX_IDLE_TIMEOUT_MS ? value : null;
-}
-
-/** Anything unreadable reads as the default, which is what the adapter falls back to for the same file. */
-export function coerceSettings(raw: unknown): ClaudeTtySettings {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS };
-  const settings = (raw as { settings?: unknown }).settings ?? raw;
-  if (settings === null || typeof settings !== "object" || Array.isArray(settings)) return { idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS };
-  return { idleTimeoutMs: parseIdleTimeout((settings as Record<string, unknown>).idleTimeoutMs) ?? DEFAULT_IDLE_TIMEOUT_MS };
 }

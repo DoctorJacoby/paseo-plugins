@@ -67,6 +67,7 @@ export class ClaudeTtyAgent implements Agent {
       throw new Error(`${APP_TITLE} does not accept ACP-injected MCP servers`);
     }
     const session = this.sessions.create(params.cwd);
+    await session.refreshAutoAccept({ publish: false });
     this.workspaces?.watch(session.id, session.cwd);
     // The client first learns this session id from the response below, so an update sent any earlier has nowhere to land.
     setImmediate(() => void this.publishCommands(session));
@@ -81,6 +82,7 @@ export class ClaudeTtyAgent implements Agent {
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
     if (params.mcpServers.length > 0) throw new Error(`${APP_TITLE} does not accept ACP-injected MCP servers`);
     const session = await this.sessions.load(params.sessionId, params.cwd);
+    await session.refreshAutoAccept({ publish: false });
     this.workspaces?.watch(session.id, session.cwd);
     await session.emitCommands();
     writeLog({ level: "info", message: "Loaded persisted ACP session", sessionId: params.sessionId, cwd: params.cwd });

@@ -54,6 +54,62 @@ test("correlates ordinary permissions and returns exact durable suggestions", as
   });
 });
 
+test("answers an ordinary permission itself while auto-accept is on, and takes none of Claude's suggestions", async () => {
+  const requests: RequestPermissionRequest[] = [];
+  let autoAccept = true;
+  const bridge = new InteractionBridge(
+    "session",
+    "/work/repo",
+    connectionWith(async (request) => {
+      requests.push(request);
+      return selected("deny");
+    }),
+    async () => autoAccept,
+  );
+  const permission = {
+    hook_event_name: "PermissionRequest",
+    session_id: "session",
+    tool_name: "Bash",
+    tool_input: { command: "cd build && rm -rf *" },
+    permission_suggestions: [{ type: "addRules", rules: [{ toolName: "Bash" }], behavior: "allow", destination: "localSettings" }],
+  };
+
+  assert.deepEqual(await bridge.handlePermissionRequest(permission), {
+    hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } },
+  });
+  assert.equal(requests.length, 0);
+
+  // Asked per request, so switching it off reaches the very next one.
+  autoAccept = false;
+  const response = await bridge.handlePermissionRequest(permission);
+  assert.equal(requests.length, 1);
+  assert.equal((response.hookSpecificOutput as { decision: { behavior: string } }).decision.behavior, "deny");
+});
+
+test("still puts questions and plans in front of a person while auto-accept is on", async () => {
+  const requests: RequestPermissionRequest[] = [];
+  const bridge = new InteractionBridge(
+    "session",
+    "/work/repo",
+    connectionWith(async (request) => {
+      requests.push(request);
+      return selected("reject");
+    }),
+    async () => true,
+  );
+  const plan = { plan: "1. Implement", allowedPrompts: [] };
+  const question = { questions: [{ question: "Which one?", header: "Pick", options: [{ label: "A" }, { label: "B" }], multiSelect: false }] };
+
+  const planResponse = await bridge.handlePermissionRequest({ tool_name: "ExitPlanMode", tool_input: plan });
+  await bridge.handlePermissionRequest({ tool_name: "AskUserQuestion", tool_input: question });
+
+  assert.deepEqual(
+    requests.map((request) => request.toolCall.title),
+    ["Approve Claude's plan", "Pick"],
+  );
+  assert.equal((planResponse.hookSpecificOutput as { decision: { behavior: string } }).decision.behavior, "deny");
+});
+
 test("uses affirmative chooser actions for question answers", async () => {
   const requests: RequestPermissionRequest[] = [];
   const answers = ["answer-1", "answer-0", "answer-1", "done"];

@@ -90,10 +90,26 @@ On a throwaway 0.8.0 daemon with a fake ACP agent, the unwrapped provider reprod
 That is what the daemon's config-file ACP providers get, since they have no `steerActiveTurn` at all.
 Claude absorbing a message into the running turn, the way it does with text typed into its terminal, would need a path to the adapter that avoids the bridge's prompt admission, and there is none.
 
-## An upgrade leaves the old provider entry behind
+## The host owns the settings, and the adapter is told where they are
 
-Before this plugin registered a provider of its own, it wrote the adapter into the daemon configuration as `agents.providers.traecli`.
-Nothing about the plugin provider touches that entry, so `server/upgrade.ts` looks for it.
+`registerSettings` hands the daemon a schema and nothing else: it returns `void`, `PluginServerContext` has no way to read a value back, and the `settings.changed` the store emits travels to the *clients* — `subscribeSettings` in the daemon's `session.ts` turns it into a `plugin_settings_changed` broadcast — never back into the plugin runtime.
+So there is no watcher to hang a mirror file off, and this plugin neither reads nor writes the document.
+
+The store runs inside the plugin's own subprocess and keeps one file per definition at `$PASEO_HOME/plugin-settings/<plugin id>/<settings id>.json`, holding `{ "version", "values" }` where `version` is the definition's rather than the file format's.
+Verified on a 0.8.0 daemon with a throwaway plugin: a missing file reads as the schema's defaults at revision `missing`, a write lands that envelope, and `paseo plugin remove` deletes the directory.
+`server/paths.ts` rebuilds that path from `PASEO_HOME`, the way `daemonConfigPath` already did.
+
+The adapter is a detached process the ACP shim spawns, so it is handed the path as `--settings-file` in the command `connect()` builds, and re-reads it at every suspension.
+The alternatives were both worse: `runAcpProvider` takes no `env`, and a value passed at spawn would only reach the next adapter rather than the sessions already open, which is the behaviour the idle timeout is documented to have.
+
+The setting is global, not per session, and it is now a choice rather than the only option.
+A per-session `ProviderSetting` is only ever *listed* from the ACP session's own `configOptions` — `toProviderConfigState` in the SDK's ACP connection builds `settings` from every option whose category is neither `model` nor `thought_level` — and the adapter does advertise config options since it started publishing its model and effort selectors, so the `session/set_config_option` surface that was missing is there.
+What is left is the trade: an uncategorised option beside those two would put the timeout in the session's own configuration and take it out of the store Paseo owns, so it would stop surviving a reload, stop being one answer per host, and stop being deleted with the plugin. That is why it stays where it is.
+
+## An upgrade leaves two things behind, and only one of them is the plugin's to fix
+
+Before this plugin registered a provider of its own, it wrote the adapter into the daemon configuration as `agents.providers.traecli`, and kept the idle timeout in `${XDG_CACHE_HOME:-~/.cache}/paseo-plugins/claude-tty/settings.json` as `{ version: 1, settings: { idleTimeoutMs } }`.
+Nothing about the plugin provider touches either, so `server/upgrade.ts` deals with both.
 
 The old entry is reported, never removed.
 An agent started on it cannot resume once it is gone, whether those agents are finished with is not the plugin's to judge, and removing it would bring back `paseo.config.patch` for that one purpose.
@@ -101,6 +117,13 @@ An agent started on it cannot resume once it is gone, whether those agents are f
 The status RPC carries it with a count of the agents still on it, from `paseo.agents.list()`, which leaves archived agents out; the count is null rather than partial when the listing runs out of budget, since a short count reads as safe to remove.
 The agents are listed only while the entry exists, so the five-second poll costs one configuration read on every other host.
 The app offers **Remove provider** under Settings → Providers only for a provider whose `source` is `custom` (read out of the web UI bundle), which is the old entry and never this plugin's, and that is where the panel and the README send people.
+
+The idle timeout is copied, once, when the plugin process starts, because nothing in the store API can do it.
+`registerSettings` returns `void`, and a definition's `migrate` runs only on a stored document with an older `version`, never on a missing one.
+But the store keeps nothing in memory: it reads its file on every read and every write, and a revision is the hash of the bytes on disk (0.8.0's `plugins/settings/index.js`), so a document written beside it is what the settings screen and the adapter see next.
+No `settings.changed` goes out for it, which only a screen opened within milliseconds of the plugin starting could notice.
+It is written to a temporary file and `link`ed into place rather than renamed, because `link` refuses an existing target and a value saved in Paseo in the meantime must win.
+The old file is deleted once the host has a document, whoever wrote it, so a reinstall — which deletes the document and starts from defaults — cannot bring a stale value back; it is kept only when writing failed, for the next start to try again.
 
 ## Constraints that are not obvious
 
@@ -158,11 +181,13 @@ Mutations read the state directory through `readState`, which does not touch the
 It is also raced against a budget and paged explicitly, because the SDK waits a minute by default while the daemon kills a plugin RPC at 30 seconds, and one page is capped at 200 agents.
 A daemon that stalls or pages forever costs the titles and nothing else, which is the whole claim.
 
-## There is no way to open an agent from here
+## Opening an agent, and the one thing a surface still cannot reach
 
-`openSurface` and `openPanel` live on command contexts and on the client entry's context, never on a surface's props, and the only `openPanel` target is a panel this plugin contributes.
-Paseo has a `{ kind: "agent" }` navigation target of its own but does not expose it, so nothing a plugin can call reveals an agent's terminal.
-An "open" button built on the client entry and an agent panel was tried and removed: the closest the API reaches is opening a tab that shows the same row the sidebar already shows, which is worse than sending someone to the agent list.
+`navigation.openAgent({ agentId })` is on `PluginSurfaceProps` and reveals an agent's terminal; the sessions rows use it.
+It is optional in the type because a host older than 0.7 passes none, so the button is hidden rather than dead when it is absent — as it is for a session the daemon no longer lists an agent for.
+
+`openSurface` and `openSettings` are the other half and are **not** on a surface's props: they live on command contexts and on the client entry's context.
+So the panel cannot send anyone to this plugin's own settings screen, and the Command Center item is what does.
 
 ## A subagent is not a session, and its work is in another file
 
@@ -186,11 +211,16 @@ Reaching across that line is a compile error rather than something the compiler 
 `shared/` is the strictest of the three: no Node, no React, and no runtime-specific SDK entry, which is why everything here that computes a path or reads the disk is server-side however little it does.
 Each entry default-exports one contribution function returning cleanup, and RPC names must match `^[a-z][a-z0-9._-]*$`.
 
-## The panel is styled off paseo's own scale
+## The rows are the host's; what is left is what the host has no component for
 
-`client/theme.ts` and `client/ui.tsx` are copies of the Discord plugin's, because the host hands plugins no metrics and each plugin directory has to bundle from its own root.
-Build new controls out of those tokens rather than out of literals, and keep the two files in step with their originals.
-Icons come from `@getpaseo/plugin/client/react-native`, by Lucide name; nothing here draws its own.
+Sections, cards and rows come from `@getpaseo/plugin/client/ui`, which the compiler keeps external and the app supplies, so they are the host's own components rather than a copy that drifts.
+Two of their behaviours decide how everything here is written: `SettingsCard` draws the divider between its children itself, so nothing passes a `divided`, and `SettingsRow` renders `children` as the control at the right of the row while `label`, `hint` and `error` stack on the left.
+`error` is the row's danger colour and is announced, which is why `ReadingRow` puts a bad reading there and a good one in `hint`; there is no leading slot and no way to colour a `hint`, so the tone dot moved into the control.
+
+What remains in `client/ui.tsx` is what the host exports no equivalent of: a bare `Button` (its own is only ever a `SettingsAction`'s), a `Disclosure` (built on `SettingsCard`, whose divider then appears exactly while it is open), a `StatusDot` and the mono font.
+`client/theme.ts` is down to the metric scales the host does not hand over and the two shades its components are written against but do not expose.
+Build new controls out of those tokens rather than out of literals.
+Icons, `Modal`, `useToast` and `copyText` come from `@getpaseo/plugin/client/react-native`; nothing here draws its own dialog or icon.
 
 ## Tests
 
@@ -200,3 +230,10 @@ A test that resolves the plugin root walks up from `import.meta.dirname`, so it 
 
 `server/acp-provider.test.ts` is the one exception to all of that: it runs the adapter's own `tsc` build and then spawns the result, because the bridge it exercises takes a command rather than a module, and a stale `dist/` would otherwise decide the result.
 It points the adapter at a throwaway state directory so the run touches none of yours.
+
+## Auto Accept lives in the adapter
+
+The daemon gives its own ACP providers an `auto_accept` feature and answers their permission requests itself; a plugin provider gets neither.
+`ProviderSetting` also has no `icon` or `tooltip`, and the SDK's schema strips both, so the toggle shows with the app's generic settings icon.
+So the adapter publishes the toggle as a boolean ACP config option, which `runAcpProvider` maps to a toggle setting and the daemon to an agent feature, and answers the `PermissionRequest` hook itself.
+`paseo run` can set a mode but not a feature, and the daemon defaults nothing for a plugin provider's unattended create, which is why a session's starting value comes from the host settings rather than from whoever created it.

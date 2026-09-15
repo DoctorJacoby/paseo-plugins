@@ -43,4 +43,5 @@ After making changes, run `paseo plugin reload <id>`. Paseo does not hot-reload 
 
 ## Plugin settings
 
-Plugin settings are stored in `~/.cache/paseo-plugins/<plugin-id>/settings.json`.
+A plugin whose settings the host owns — `registerSettings` in `index.server.ts`, read in a screen `addSettingsScreen` contributes — keeps them in `$PASEO_HOME/plugin-settings/<plugin-id>/<settings-id>.json`, written by the daemon and deleted with the plugin.
+A plugin with a store of its own keeps it in `~/.cache/paseo-plugins/<plugin-id>/settings.json`, which nothing cleans up.

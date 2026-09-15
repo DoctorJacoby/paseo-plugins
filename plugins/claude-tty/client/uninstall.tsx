@@ -1,4 +1,5 @@
 import { useRpc } from "@getpaseo/plugin/client";
+import { useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import React from "react";
 import { Text, View } from "react-native";
@@ -10,13 +11,18 @@ import { Disclosure } from "./ui.tsx";
 
 export function RemoveStateSection({ palette, onSettled }: { palette: Palette; onSettled: () => void }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const removeState = useRpc(contracts.removeState);
   const remove = useMutation({
     mutationFn: () => removeState({}),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      toast.show(result.detail, { variant: "success" });
       void queryClient.invalidateQueries();
       onSettled();
     },
+    // A refusal is the expected answer while a session is open, and it says why, so it is kept on
+    // screen as well: a toast is gone before the sentence has been read.
+    onError: (error) => toast.error(String(error)),
   });
 
   return (
@@ -33,12 +39,12 @@ export function RemoveStateSection({ palette, onSettled }: { palette: Palette; o
             palette={palette}
             label="Delete the saved sessions"
             confirmLabel="Delete them"
+            detail="Every saved session goes, so no agent can resume the Claude conversation it was holding. Claude's own configuration, credentials and transcripts are untouched."
             disabled={remove.isPending}
             onConfirm={() => remove.mutate()}
           />
         </View>
         {remove.error ? <Monospace palette={palette} text={String(remove.error)} /> : null}
-        {remove.data ? <Monospace palette={palette} text={remove.data.detail} /> : null}
       </View>
     </Disclosure>
   );

@@ -1,51 +1,62 @@
-import React, { useEffect, useState } from "react";
-import { View } from "react-native";
-import { spacing, type Palette } from "./theme.ts";
+import { Icon, Modal } from "@getpaseo/plugin/client/react-native";
+import React, { useState } from "react";
+import { Text, View } from "react-native";
+import { fontSize, iconSize, leading, spacing, type Palette } from "./theme.ts";
 import { Button } from "./ui.tsx";
 
-/** How long an armed action waits before it disarms itself rather than sitting there primed. */
-const ARMED_MS = 6_000;
-
 /**
- * Paseo gives plugins no dialog, so a destructive action arms in place: the button is replaced by
- * the confirmation and a way out of it.
+ * Every destructive action here ends a session or deletes state, so it asks first. The host owns the
+ * dialog: a bottom sheet on a phone, a centred dialog otherwise, dismissed by the backdrop, Escape or
+ * the platform back action, all of which arrive as `onOpenChange(false)`.
  */
 export function ConfirmButton({
   palette,
   label,
   confirmLabel,
+  detail,
   disabled,
   onConfirm,
 }: {
   palette: Palette;
   label: string;
   confirmLabel: string;
+  /** What the action does, in the words the panel would otherwise have to print beside the button. */
+  detail?: string;
   disabled?: boolean;
   onConfirm: () => void;
 }) {
-  const [armed, setArmed] = useState(false);
-  useEffect(() => {
-    if (!armed) return;
-    const timer = setTimeout(() => setArmed(false), ARMED_MS);
-    return () => clearTimeout(timer);
-  }, [armed]);
+  const [open, setOpen] = useState(false);
 
-  if (!armed) {
-    return <Button palette={palette} label={label} disabled={disabled} onPress={() => setArmed(true)} />;
-  }
   return (
-    <View style={{ flexDirection: "row", gap: spacing[2] }}>
-      <Button palette={palette} label="Cancel" variant="ghost" onPress={() => setArmed(false)} />
-      <Button
-        palette={palette}
-        label={confirmLabel}
-        variant="default"
-        disabled={disabled}
-        onPress={() => {
-          setArmed(false);
-          onConfirm();
-        }}
-      />
+    <View>
+      <Button palette={palette} label={label} disabled={disabled} onPress={() => setOpen(true)} />
+      <Modal
+        title={label}
+        icon={<Icon name="TriangleAlert" size={iconSize.md} color={palette.statusWarning} />}
+        open={open}
+        onOpenChange={setOpen}
+      >
+        <Modal.Content>
+          {detail ? (
+            <Text style={{ color: palette.foregroundMuted, fontSize: fontSize.base, lineHeight: leading(fontSize.base) }}>
+              {detail}
+            </Text>
+          ) : null}
+          <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: spacing[2] }}>
+            <Button palette={palette} label="Cancel" variant="ghost" onPress={() => setOpen(false)} />
+            <Button
+              palette={palette}
+              label={confirmLabel}
+              variant="default"
+              disabled={disabled}
+              onPress={() => {
+                setOpen(false);
+                onConfirm();
+              }}
+            />
+          </View>
+        </Modal.Content>
+      </Modal>
     </View>
   );
 }
