@@ -27,6 +27,7 @@ export interface CreatedWorkspace {
 export class WorkspaceManagementService {
   private readonly definitions: BoundaryLabelDefinitions;
   private readonly loadResolver: () => Promise<BoundaryResolver>;
+  private readonly repair: boolean;
   private resolveBoundary: BoundaryResolver = () => null;
   private manager: BoundaryLabelManager | null = null;
   private backfilled = false;
@@ -34,9 +35,11 @@ export class WorkspaceManagementService {
   constructor(input: {
     definitions: BoundaryLabelDefinitions;
     loadResolver: () => Promise<BoundaryResolver>;
+    repair?: boolean;
   }) {
     this.definitions = input.definitions;
     this.loadResolver = input.loadResolver;
+    this.repair = input.repair ?? false;
   }
 
   async workspaceCreated(client: ManagementClient, event: CreatedWorkspace): Promise<void> {
@@ -64,6 +67,7 @@ export class WorkspaceManagementService {
       client,
       definitions: this.definitions,
       resolveBoundary: (workspace) => this.resolveBoundary(workspace),
+      repair: this.repair,
     });
     return this.manager;
   }

@@ -11,6 +11,7 @@ import {
   loadBoundaryResolver,
   parseBoundaries,
   parseBoxProjects,
+  repairsRequested,
 } from "./boundary-config.ts";
 
 // Verbatim shapes from the host's own files, comments and column padding included: the point of
@@ -145,24 +146,121 @@ test("resolves a workspace end to end from the two host files", async () => {
   assert.equal(resolve({ cwd: path.join(home, "notes") }), HOST_BOUNDARY);
 });
 
-test("missing host files leave every workspace on the host", async () => {
-  const configRoot = await tempRoot("workspace-management-absent-");
+test("a listed root resolves to its boundary, an unlisted one to the host", async () => {
+  const home = await tempRoot("workspace-management-listed-");
+  const configRoot = await tempRoot("workspace-management-listed-config-");
+  const projects = path.join(configRoot, "projects");
+  const boundaries = path.join(configRoot, "boundaries");
+  await writeFile(boundaries, BOUNDARIES);
+  await writeFile(projects, PROJECTS);
+  await mkdir(path.join(home, "projects", "remi-plus"), { recursive: true });
+  await mkdir(path.join(home, "projects", "elsewhere"), { recursive: true });
+
+  const resolve = await loadBoundaryResolver({
+    HOME: home,
+    WORKSPACE_MANAGEMENT_BOUNDARIES_PATH: boundaries,
+    WORKSPACE_MANAGEMENT_BOX_PROJECT_CONFIG: projects,
+  });
+
+  assert.equal(resolve({ cwd: path.join(home, "projects", "remi-plus") }), "cebud-work");
+  assert.equal(resolve({ cwd: path.join(home, "projects", "elsewhere") }), HOST_BOUNDARY);
+});
+
+test("an empty projects map is the host saying it boxes nothing", async () => {
+  const configRoot = await tempRoot("workspace-management-empty-");
+  const projects = path.join(configRoot, "projects");
+  const boundaries = path.join(configRoot, "boundaries");
+  await writeFile(boundaries, BOUNDARIES);
+  await writeFile(projects, "# nothing is boxed today\n");
 
   const resolve = await loadBoundaryResolver({
     HOME: configRoot,
-    WORKSPACE_MANAGEMENT_BOUNDARIES_PATH: path.join(configRoot, "no-boundaries"),
-    WORKSPACE_MANAGEMENT_BOX_PROJECT_CONFIG: path.join(configRoot, "no-projects"),
+    WORKSPACE_MANAGEMENT_BOUNDARIES_PATH: boundaries,
+    WORKSPACE_MANAGEMENT_BOX_PROJECT_CONFIG: projects,
   });
 
   assert.equal(resolve({ cwd: "/anywhere" }), HOST_BOUNDARY);
 });
 
-test("the host's own paths are the defaults", () => {
+test("a missing projects map labels nothing at all, and says so", async () => {
+  const configRoot = await tempRoot("workspace-management-absent-");
+  const missing = path.join(configRoot, "no-projects");
+  const warnings: string[] = [];
+
+  const resolve = await loadBoundaryResolver(
+    {
+      HOME: configRoot,
+      WORKSPACE_MANAGEMENT_BOUNDARIES_PATH: path.join(configRoot, "no-boundaries"),
+      WORKSPACE_MANAGEMENT_BOX_PROJECT_CONFIG: missing,
+    },
+    (message) => warnings.push(message),
+  );
+
+  assert.equal(resolve({ cwd: "/anywhere" }), null);
+  assert.equal(resolve({ cwd: path.join(configRoot, "projects", "remi-plus") }), null);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0] ?? "", /no boxed-project map/);
+  assert.match(warnings[0] ?? "", new RegExp(missing.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("a missing boundary list still knows the host, but names no boundary", async () => {
+  const home = await tempRoot("workspace-management-no-boundaries-");
+  const configRoot = await tempRoot("workspace-management-no-boundaries-config-");
+  const projects = path.join(configRoot, "projects");
+  await writeFile(projects, PROJECTS);
+  await mkdir(path.join(home, "projects", "remi-plus"), { recursive: true });
+  const warnings: string[] = [];
+
+  const resolve = await loadBoundaryResolver(
+    {
+      HOME: home,
+      WORKSPACE_MANAGEMENT_BOUNDARIES_PATH: path.join(configRoot, "no-boundaries"),
+      WORKSPACE_MANAGEMENT_BOX_PROJECT_CONFIG: projects,
+    },
+    (message) => warnings.push(message),
+  );
+
+  assert.equal(resolve({ cwd: path.join(home, "projects", "remi-plus") }), null);
+  assert.equal(resolve({ cwd: path.join(home, "notes") }), HOST_BOUNDARY);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0] ?? "", /no boundary list/);
+});
+
+test("unreadable roots are not the same answer as no roots", () => {
+  assert.equal(
+    boundaryResolverFromRoots({ roots: null, boundaries: ["zone"] })({ cwd: "/anywhere" }),
+    null,
+  );
+  assert.equal(
+    boundaryResolverFromRoots({ roots: [], boundaries: ["zone"] })({ cwd: "/anywhere" }),
+    HOST_BOUNDARY,
+  );
+});
+
+test("the host's TrustCell paths are the defaults, and the env still overrides them", () => {
   const paths = configPaths({ HOME: "/home/me" });
 
+  assert.equal(paths.boundaries, "/home/me/dotfiles/hosts/vps/trustcell/boundaries");
+  assert.equal(paths.boxProjects, "/home/me/dotfiles/hosts/vps/trustcell/projects");
+
+  const overridden = configPaths({
+    HOME: "/home/me",
+    WORKSPACE_MANAGEMENT_BOUNDARIES_PATH: "/tmp/boundaries",
+    WORKSPACE_MANAGEMENT_BOX_PROJECT_CONFIG: "/tmp/projects",
+  });
+
+  assert.equal(overridden.boundaries, "/tmp/boundaries");
+  assert.equal(overridden.boxProjects, "/tmp/projects");
   assert.equal(
-    paths.boundaries,
-    "/home/me/dotfiles/hosts/vps/credential-broker/boundaries",
+    configPaths({ HOME: "/home/me", BOX_PROJECT_CONFIG: "/tmp/legacy" }).boxProjects,
+    "/tmp/legacy",
   );
-  assert.equal(paths.boxProjects, "/home/me/dotfiles/hosts/vps/toolchain-box/projects");
+});
+
+test("a repair pass happens only when it is asked for", () => {
+  assert.equal(repairsRequested({}), false);
+  assert.equal(repairsRequested({ WORKSPACE_MANAGEMENT_REPAIR_LABELS: "" }), false);
+  assert.equal(repairsRequested({ WORKSPACE_MANAGEMENT_REPAIR_LABELS: "0" }), false);
+  assert.equal(repairsRequested({ WORKSPACE_MANAGEMENT_REPAIR_LABELS: "1" }), true);
+  assert.equal(repairsRequested({ WORKSPACE_MANAGEMENT_REPAIR_LABELS: " TRUE " }), true);
 });

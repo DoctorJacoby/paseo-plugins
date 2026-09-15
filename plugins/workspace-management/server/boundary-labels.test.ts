@@ -64,6 +64,9 @@ const definitions = {
   "paseo-plugins": { name: "paseo-plugins", color: "sky" },
 } as const;
 
+/** The live set, `host` included: repairing the bad `host` sweep is what the repair pass is for. */
+const withHost = { ...definitions, host: { name: "host", color: "red" } } as const;
+
 function resolver(workspace: ManagedWorkspace): string | null {
   if (workspace.cwd.includes("remi-plus")) return "cebud-work";
   if (workspace.cwd.includes("paseo-plugins")) return "paseo-plugins";
@@ -136,6 +139,87 @@ test("a newly created workspace gets its boundary label without disturbing exist
   assert.deepEqual(client.assignments, [
     { workspaceId: "new", label: definitions["cebud-work"], assigned: true },
   ]);
+});
+
+test("without a repair pass a wrong boundary label is left where it is", async () => {
+  const workspace: ManagedWorkspace = {
+    id: "one",
+    projectId: "p1",
+    cwd: "/work/remi-plus",
+    labels: ["host"],
+  };
+  const client = new FakeLabelClient([{ name: "host", color: "red" }], [workspace]);
+  const manager = new BoundaryLabelManager({
+    client,
+    definitions: withHost,
+    resolveBoundary: resolver,
+  });
+
+  await manager.backfill([workspace]);
+
+  assert.deepEqual(workspace.labels, ["host", "cebud-work"]);
+  assert.deepEqual(
+    client.assignments.map((entry) => [entry.label.name, entry.assigned]),
+    [["cebud-work", true]],
+  );
+});
+
+test("a repair pass takes off the managed label the host contradicts, and nothing else", async () => {
+  const workspaces: ManagedWorkspace[] = [
+    { id: "one", projectId: "p1", cwd: "/work/remi-plus", labels: ["host", "manual"] },
+    { id: "two", projectId: "p2", cwd: "/work/paseo-plugins", labels: ["paseo-plugins"] },
+  ];
+  const client = new FakeLabelClient(
+    [
+      { name: "host", color: "red" },
+      { name: "paseo-plugins", color: "sky" },
+    ],
+    workspaces,
+  );
+  const repairs: string[] = [];
+  const manager = new BoundaryLabelManager({
+    client,
+    definitions: withHost,
+    resolveBoundary: resolver,
+    repair: true,
+    onRepair: (message) => repairs.push(message),
+  });
+
+  await manager.backfill(workspaces);
+
+  assert.deepEqual(workspaces[0]?.labels, ["manual", "cebud-work"]);
+  assert.deepEqual(workspaces[1]?.labels, ["paseo-plugins"]);
+  assert.deepEqual(
+    client.assignments.map((entry) => [entry.workspaceId, entry.label.name, entry.assigned]),
+    [
+      ["one", "cebud-work", true],
+      ["one", "host", false],
+    ],
+  );
+  assert.equal(repairs.length, 1);
+  assert.match(repairs[0] ?? "", /removed the "host" label/);
+});
+
+test("a repair pass removes nothing from a workspace whose boundary is unknown", async () => {
+  const workspace: ManagedWorkspace = {
+    id: "one",
+    projectId: "p1",
+    cwd: "/work/somewhere-else",
+    labels: ["host", "cebud-work"],
+  };
+  const client = new FakeLabelClient([{ name: "host", color: "red" }], [workspace]);
+  const manager = new BoundaryLabelManager({
+    client,
+    definitions: withHost,
+    resolveBoundary: () => null,
+    repair: true,
+    onRepair: () => assert.fail("nothing is known about this workspace"),
+  });
+
+  await manager.backfill([workspace]);
+
+  assert.deepEqual(workspace.labels, ["host", "cebud-work"]);
+  assert.deepEqual(client.assignments, []);
 });
 
 test("an unconfigured or unknown boundary is left alone", async () => {

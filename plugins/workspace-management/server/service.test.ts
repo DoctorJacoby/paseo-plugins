@@ -7,6 +7,7 @@ import { WorkspaceManagementService, type ManagementClient } from "./service.ts"
 class FakeManagementClient implements ManagementClient {
   listCalls = 0;
   readonly assignments: string[] = [];
+  readonly operations: Array<{ workspaceId: string; name: string; assigned: boolean }> = [];
   readonly workspaces: ManagedWorkspace[] = [
     { id: "open-one", projectId: "project-one", cwd: "/boxes/one", labels: [] },
     { id: "open-two", projectId: "project-two", cwd: "/elsewhere/two", labels: [] },
@@ -27,6 +28,11 @@ class FakeManagementClient implements ManagementClient {
     assigned: boolean;
   }) {
     this.assignments.push(input.workspaceId);
+    this.operations.push({
+      workspaceId: input.workspaceId,
+      name: input.label.name,
+      assigned: input.assigned,
+    });
     return {};
   }
 
@@ -120,4 +126,41 @@ test("a workspace outside every configured boundary is left unlabeled", async ()
   });
 
   assert.equal(client.assignments.includes("outside"), false);
+});
+
+test("a repairing service passes the repair through to reconciliation", async () => {
+  const client = new FakeManagementClient();
+  client.workspaces[0]!.labels = ["host"];
+  const repairing = new WorkspaceManagementService({
+    definitions: { ...definitions, host: { name: "host", color: "red" } },
+    loadResolver: async () => resolve,
+    repair: true,
+  });
+
+  await repairing.workspaceCreated(client, {
+    id: "open-one",
+    projectId: "project-one",
+    cwd: "/boxes/one",
+  });
+
+  assert.deepEqual(client.operations, [
+    { workspaceId: "open-one", name: "zone", assigned: true },
+    { workspaceId: "open-one", name: "host", assigned: false },
+  ]);
+});
+
+test("the default service repairs nothing", async () => {
+  const client = new FakeManagementClient();
+  client.workspaces[0]!.labels = ["host"];
+
+  await service().workspaceCreated(client, {
+    id: "open-one",
+    projectId: "project-one",
+    cwd: "/boxes/one",
+  });
+
+  assert.deepEqual(
+    client.operations.filter((operation) => !operation.assigned),
+    [],
+  );
 });
