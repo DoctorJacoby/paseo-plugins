@@ -1,24 +1,28 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import * as contracts from "./shared/contracts.ts";
+import { PLUGIN_ID, PLUGIN_LABEL } from "./shared/identity.ts";
 import { ClaudeTtySettings } from "./client/settings.tsx";
 import { ClaudeTtySurface } from "./client/surface.tsx";
 
-export const SURFACE_ID = "claude-tty";
-export const SETTINGS_SCREEN_ID = "claude-tty";
+// Everything the app keys a contribution by is the plugin's own ID or built from it, so that a
+// second copy installed beside this one claims none of the first one's: not its surface, not its
+// settings screen, not its command-centre entries. ./shared/identity.ts is where it comes from.
+export const SURFACE_ID = PLUGIN_ID;
+export const SETTINGS_SCREEN_ID = PLUGIN_ID;
 
 export default function contribute(client: PluginClientContext) {
   client.addSurface(SURFACE_ID, ClaudeTtySurface);
 
   client.addSidebarItem({
-    id: "claude-tty",
-    title: "Claude TTY",
+    id: PLUGIN_ID,
+    title: PLUGIN_LABEL,
     icon: "SquareTerminal",
     surface: SURFACE_ID,
   });
 
   client.addSettingsScreen({
     id: SETTINGS_SCREEN_ID,
-    title: "Claude TTY",
+    title: PLUGIN_LABEL,
     icon: "SquareTerminal",
     Component: ClaudeTtySettings,
   });
@@ -26,8 +30,8 @@ export default function contribute(client: PluginClientContext) {
   // The panel cannot reach the settings screen: `openSettings` is on command contexts, never on a
   // surface's props. This is the affordance that does, alongside Settings → Plugins itself.
   client.addCommandCenterItem({
-    id: "claude-tty-settings",
-    title: "Claude TTY: settings",
+    id: `${PLUGIN_ID}-settings`,
+    title: `${PLUGIN_LABEL}: settings`,
     icon: "Settings",
     keywords: ["claude", "adapter", "acp", "idle", "suspend", "timeout"],
     context: "global",
@@ -37,8 +41,8 @@ export default function contribute(client: PluginClientContext) {
   });
 
   client.addCommandCenterItem({
-    id: "claude-tty-doctor",
-    title: "Claude TTY: run diagnostics",
+    id: `${PLUGIN_ID}-doctor`,
+    title: `${PLUGIN_LABEL}: run diagnostics`,
     icon: "Stethoscope",
     keywords: ["claude", "adapter", "acp", "diagnose", "doctor", "provider"],
     context: "global",
@@ -49,8 +53,8 @@ export default function contribute(client: PluginClientContext) {
   });
 
   client.addCommandCenterItem({
-    id: "claude-tty-release-stale-locks",
-    title: "Claude TTY: release stale session locks",
+    id: `${PLUGIN_ID}-release-stale-locks`,
+    title: `${PLUGIN_LABEL}: release stale session locks`,
     icon: "LockOpen",
     keywords: ["claude", "adapter", "acp", "lock", "session", "stale"],
     context: "global",

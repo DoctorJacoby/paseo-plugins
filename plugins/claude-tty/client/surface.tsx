@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useCallback } from "react";
 import { ScrollView, Text, View } from "react-native";
 import * as contracts from "../shared/contracts.ts";
+import { PLUGIN_ID } from "../shared/identity.ts";
 import { PROVIDER_LABEL } from "../shared/provider.ts";
 import { DoctorSection } from "./doctor.tsx";
 import { SessionsSection } from "./sessions.tsx";
@@ -14,7 +15,7 @@ import { MAX_CONTENT_WIDTH, fontSize, leading, spacing } from "./theme.ts";
 import { Monospace, ReadingRow, adapterReading, claudeReading } from "./status.tsx";
 import { usePalette } from "./ui.tsx";
 
-export const STATUS_QUERY_KEY = ["claude-tty", "status"];
+export const STATUS_QUERY_KEY = [PLUGIN_ID, "status"];
 const REFETCH_MS = 5_000;
 
 export function ClaudeTtySurface({ theme, layout, navigation }: PluginSurfaceProps) {

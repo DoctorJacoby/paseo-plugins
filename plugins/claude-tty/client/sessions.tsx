@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import * as contracts from "../shared/contracts.ts";
+import { PLUGIN_ID } from "../shared/identity.ts";
 import type { SessionsPayload } from "../shared/contracts.ts";
 import { groupSessions, lastActiveLabel } from "../shared/sessions.ts";
 import { fontSize, leading, spacing, type Palette } from "./theme.ts";
@@ -12,7 +13,7 @@ import { ConfirmButton } from "./confirm.tsx";
 import { Monospace, ReadingRow, type Reading } from "./status.tsx";
 import { Button, pressable } from "./ui.tsx";
 
-export const SESSIONS_QUERY_KEY = ["claude-tty", "sessions"];
+export const SESSIONS_QUERY_KEY = [PLUGIN_ID, "sessions"];
 const REFETCH_MS = 10_000;
 
 type Session = SessionsPayload["sessions"][number];

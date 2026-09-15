@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
+    "identity": "node scripts/set-identity.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"{client,server,shared}/**/*.test.ts\""
   },

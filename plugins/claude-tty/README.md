@@ -96,4 +96,29 @@ pnpm --filter @paseo-plugins/claude-tty typecheck
 pnpm --filter @paseo-plugins/claude-tty test
 ```
 
+### A second copy, to develop against
+
+A reload stops Claude in every session on the provider, because the plugin process is the transport
+for all of them. That is bearable for a session of your own and not for somebody else's, so the
+answer is a second copy under an ID of its own: the working sessions stay on `claude-tty`, and the
+copy being changed is reloaded as often as it likes.
+
+In a second checkout — a `git worktree` of this one is enough:
+
+```sh
+pnpm --filter @paseo-plugins/claude-tty identity claude-tty-dev
+pnpm install --frozen-lockfile
+pnpm --filter @paseo-plugins/claude-tty-acp build
+paseo plugin add "/absolute/path/to/the/second/checkout/plugins/claude-tty"
+```
+
+That one command writes the plugin ID, the provider ID, the label, the manifest and the adapter's
+state directory — the things two copies may not share. `identity --check` says whether they still
+agree, `identity` on its own prints them, and `identity claude-tty` puts the checkout back. Sessions,
+locks and logs are then under `~/.local/state/claude-tty-dev-acp/`, apart from the stable copy's, so
+**Danger zone** on one leaves the other alone.
+
+The two are separate providers, so an agent started on one cannot be moved to the other: start
+throwaway sessions on the dev provider and leave the work on the stable one.
+
 See [CLAUDE.md](./CLAUDE.md) for the constraints that are not obvious from the code.
