@@ -1,32 +1,34 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { StatusPayload } from "../shared/contracts.ts";
-import { adapterBinaryPath, adapterEntryPath, claudeCandidates, defaultStateDirectory, settingsFilePath, type Env } from "./paths.ts";
+import { claudeCandidates, defaultStateDirectory, settingsFilePath, type Env } from "./paths.ts";
 import { IDLE_TIMEOUT_ENV, parseIdleTimeout } from "../shared/settings.ts";
-import { fileExists, firstExecutable, resolveRepoRoot } from "./checkout.ts";
+import { firstExecutable } from "./checkout.ts";
+import { resolveAdapter } from "./adapter.ts";
 import { readLegacyProvider } from "./upgrade.ts";
 
 export async function readStatus(paseo: PaseoApi, env: Env = process.env): Promise<StatusPayload> {
-  const [repo, claudeBinary, legacyProvider] = await Promise.all([
-    resolveRepoRoot(env),
+  const [adapter, claudeBinary, legacyProvider] = await Promise.all([
+    resolveAdapter(env),
     firstExecutable(claudeCandidates(env)),
     readLegacyProvider(paseo, env),
   ]);
-  const common = {
+
+  return {
+    repoRoot: adapter.checkout.root,
+    // Advisory since the adapter's path can be set instead, so it is reported beside the adapter
+    // rather than in front of everything: a host running a configured adapter has no checkout and
+    // nothing wrong with it.
+    checkoutProblem: adapter.checkout.problem,
+    adapter: {
+      binary: adapter.executable,
+      source: adapter.source,
+      built: adapter.built,
+      problem: adapter.problem,
+    },
     host: { node: process.version, claude: claudeBinary },
     stateDirectory: defaultStateDirectory(env),
     settings: { file: settingsFilePath(env), envOverrideMs: envOverrideOf(env) },
     legacyProvider,
-  };
-
-  if (repo.root === null) {
-    return { repoRoot: null, problem: repo.problem, adapter: { binary: null, built: false }, ...common };
-  }
-
-  return {
-    repoRoot: repo.root,
-    problem: null,
-    adapter: { binary: adapterBinaryPath(repo.root), built: await fileExists(adapterEntryPath(repo.root)) },
-    ...common,
   };
 }
 

@@ -124,13 +124,29 @@ export function adapterEntryPath(repoRoot: string): string {
 }
 
 /**
+ * The file that says which build an executable would run, which is not always the executable. The
+ * one in a checkout is a shell wrapper committed to the repository: it exists before anything is
+ * built and its mtime never moves, so `dist/cli.js` beside it is what "built" and "rebuilt" mean.
+ * Anything else — a path someone configured, pointing at whatever they build the adapter with — is
+ * its own witness, because there is nothing else here to know about it.
+ */
+export function adapterBuildWitness(executable: string): string {
+  const directory = path.dirname(executable);
+  if (path.basename(directory) !== "bin") return executable;
+  return path.join(path.dirname(directory), "dist", ADAPTER_ENTRY_NAME);
+}
+
+/**
  * What the provider spawns. The adapter is a detached process with no way to reach the host's
  * settings store, so it is handed the document's path and re-reads it at every suspension, which is
  * what lets a change reach sessions that are already connected.
+ *
+ * It takes the executable rather than a checkout: which adapter runs is `server/adapter.ts`'s to
+ * decide, and from this point down the answer is a path like any other.
  */
-export function adapterCommand(repoRoot: string, env: Env = process.env): [string, ...string[]] {
+export function adapterCommand(executable: string, env: Env = process.env): [string, ...string[]] {
   return [
-    adapterBinaryPath(repoRoot),
+    executable,
     ADAPTER_SETTINGS_FLAG,
     settingsFilePath(env),
     ADAPTER_ANSWERS_FLAG,

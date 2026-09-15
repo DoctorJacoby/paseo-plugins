@@ -34,6 +34,16 @@ pnpm --filter @paseo-plugins/claude-tty-acp build
 paseo plugin add "/absolute/path/to/paseo-plugins/plugins/claude-tty"
 ```
 
+### Pointing the plugin at an adapter you build yourself
+
+By default the plugin runs the adapter beside it, in the checkout it was installed from, and that is the whole story for either installation above. **Adapter executable** under Settings is the way out of it: set a path there and that is what the provider spawns, from wherever you build it.
+
+That is for a host where the default does not fit — no `pnpm` for the daemon to build with, an adapter built by whatever else builds that host's software, or a plugin whose own checkout is not the copy of the adapter you want running. It is a path to a *built* adapter: the adapter is `private` and links a native module, so there is nothing published to point at, and it is built from a clone the way the block above builds one.
+
+The panel's **Adapter** section says which of the two is in force, and reads the path back: a path that is not there, cannot be executed, or has not been built is a sentence on the panel rather than a session that will not open. Clearing the setting goes back to the checkout's.
+
+A session already open keeps the adapter it started on — the process is already running — so a change reaches the sessions started after it.
+
 **An authenticated Claude stays yours to arrange.** Run `claude` interactively as the user the daemon runs as; the plugin never touches Claude's configuration, credentials, or transcripts.
 
 Everything is host-local: selecting another host in Paseo shows that host's own answer, and each host is installed separately.
@@ -49,6 +59,8 @@ Earlier versions of this plugin, and the adapter's own README, registered the ad
 ## Settings
 
 Under **Settings → Plugins → Claude TTY** on the selected host, or from the Command Center as "Claude TTY: settings". Paseo owns the store, so the value survives a reload, an update and a daemon restart, every client sees a change without reloading, and it is deleted with the plugin.
+
+The **Adapter executable** setting is above, under [Pointing the plugin at an adapter you build yourself](#pointing-the-plugin-at-an-adapter-you-build-yourself): empty, which is the default, runs the adapter in the checkout this plugin was installed from.
 
 The **Suspend idle Claude** setting controls how long a native Claude process remains alive after the session last did anything. It defaults to one hour, and you can choose 15 minutes through 8 hours, or **Never**. It applies to every session on the host. The adapter's per-session ACP configuration carries the model, the effort level and Auto Accept, and moving the timeout in beside them would also move the value out of the store Paseo owns, so the one that survives a reload and an update stays host-wide.
 

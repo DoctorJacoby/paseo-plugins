@@ -1,9 +1,8 @@
 import os from "node:os";
 import type { DoctorPayload } from "../shared/contracts.ts";
 import { parseDiagnosticsReport } from "./diagnostics.ts";
-import { adapterBinaryPath } from "./paths.ts";
 import { runCommand } from "./exec.ts";
-import { resolveRepoRoot } from "./checkout.ts";
+import { resolveAdapter } from "./adapter.ts";
 
 const DIAGNOSE_TIMEOUT_MS = 60_000;
 
@@ -20,9 +19,11 @@ export function lastDoctorReport(): DoctorPayload | null {
  * running them.
  */
 export async function runDoctor(): Promise<DoctorPayload> {
-  const repo = await resolveRepoRoot();
-  const binary = repo.root === null ? null : adapterBinaryPath(repo.root);
-  lastReport = { ranAt: Date.now(), adapter: { binary, ...(await checkAdapter(binary, repo.root ?? os.tmpdir())) } };
+  const adapter = await resolveAdapter();
+  const binary = adapter.executable;
+  // The checkout is the cwd when there is one, so the adapter's own checks run where it would; a
+  // configured adapter answers for a host rather than for a tree, and anywhere harmless will do.
+  lastReport = { ranAt: Date.now(), adapter: { binary, ...(await checkAdapter(binary, adapter.checkout.root ?? os.tmpdir())) } };
   return lastReport;
 }
 

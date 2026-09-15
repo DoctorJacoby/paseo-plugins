@@ -24,20 +24,30 @@ That is the only way to see what a filesystem guard actually does, so use it rat
 
 ## The checkout is not discoverable, and the daemon asks for the provider before it can be
 
-The plugin runs the adapter built inside the checkout it was installed from, and nothing in the plugin runtime says where that is.
+By default the plugin runs the adapter built inside the checkout it was installed from, and nothing in the plugin runtime says where that is.
 The server bundle is `eval`'d from a string in a wrapper taking only `require`, so it has no `__dirname`, and esbuild compiles `import.meta` to `{}`; the daemon's initialize message carries `pluginId`, `appVersion`, `bundle` and `settingsDirectory` and no path.
 The daemon's own configuration is the one record, so `server/checkout.ts` reads `$PASEO_HOME/config.json` — the plugin process inherits `PASEO_HOME` from the daemon — rather than asking over `paseo.config.get()`, because `registerProvider` has to be called synchronously during the contribution and the daemon connects the provider about ten milliseconds after the plugin reports ready, long before any RPC has handed the plugin a `PaseoApi`.
-`apps/claude-tty-acp/package.json` has to exist two levels above the plugin directory before anything else is worth reporting.
+`apps/claude-tty-acp/package.json` has to exist two levels above the plugin directory before that answer is worth anything.
 `server/paths.ts` is the naming vocabulary that resolving builds on and computes paths without touching the disk.
+
+**It is no longer the only source, and failing to find it is no longer fatal.**
+`adapterExecutable` in the host settings names an adapter outright, and `server/adapter.ts` is the one place that decides between the two: the setting when it holds a path, the checkout otherwise, and neither is the end of the world on its own.
+It reads the setting off the document at `settingsFilePath` rather than asking the store, for the same reason the adapter is handed that path — `registerSettings` returns `void` and nothing hands a value back — and a document that is missing, unreadable or malformed reads as nothing configured, because the store writes the file only once somebody saves and refusing to run over a JSON parse would be every session on the host.
+Nothing in there throws: a path that is missing, unexecutable or unbuilt comes back as a sentence on `problem`, which the panel shows and `connect()` throws only when there is no path at all.
+The checkout is still resolved and still reported, because an update still builds in it and a host running the default still wants to see it.
+
+That is also why the resolution is no longer cached the way the checkout was.
+The path the daemon loaded this plugin from cannot change under it; a setting can, so `resolveAdapter` reads the document every time and `getCatalogCacheKey` costs that read plus its one `stat`.
 
 `connect()` is async, so the command is resolved per connection rather than at registration: `server/provider.ts` builds the `runAcpProvider` shim inside `connect` and delegates to it.
 That shim spawns one adapter process per ACP session, plus a throwaway one per connection to probe capabilities and another per catalogue fetch, and it drops the adapter's stderr — which is why the diagnostics section still runs the adapter's own `--diagnose`.
 
 How often that catalogue fetch happens is `getCatalogCacheKey`'s to decide.
 Without it the daemon keys the cache on `["target", <cwd>]` and fetches once per distinct workspace directory, which on a machine that spawns worktrees is once per worktree; with it, equal keys share one fetch across every directory.
-The key is the adapter's build — the entry point's path, mtime and size, one `stat` — rather than a bare constant, because the catalogue is compiled into the adapter and a rebuilt adapter is where a different one comes from; a constant would serve the old catalogue for the rest of the daemon's life.
+The key is the adapter's build — the build witness's path, mtime and size, one `stat` — rather than a bare constant, because the catalogue is compiled into the adapter and a rebuilt adapter is where a different one comes from; a constant would serve the old catalogue for the rest of the daemon's life.
+`adapterBuildWitness` is what "the build" means for a path: the executable in a checkout is a committed shell wrapper whose mtime never moves, so the `dist/cli.js` it runs is the file to watch, while a configured executable is its own witness because there is nothing else here to know about it.
 Nothing else invalidates it. The daemon refetches when something asks it to refresh (`force`), and marks catalogues stale when the settings snapshot is refreshed; there is no expiry.
-It is a separate IPC call on essentially every provider snapshot read, so it must stay at one `stat`: the checkout behind it is resolved once, since the path the daemon loaded this plugin process from cannot change under it.
+It is a separate IPC call on essentially every provider snapshot read, so it must stay at the settings document and one `stat`.
 An adapter that is not built yet answers with a shared key of its own rather than with none, so that failure is reported once instead of once per workspace, and the build that fixes it changes the key.
 
 ## The adapter stays a subprocess, and `connector:` cannot replace it
@@ -173,8 +183,8 @@ The daemon's `PATH` is not your shell's.
 A systemd daemon typically has `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin` and nothing else, so Claude is routinely missing from it.
 That is a reading the surface reports, not an error to hide, and every spawn failure has to read as a sentence rather than a stack trace.
 
-The plugin never builds the adapter itself; install and update do, through the manifest's `build`, and a directory install leaves it to whoever owns the checkout.
-The surface reports whether `dist/cli.js` is there, because that is what a spawn failure will otherwise say opaquely.
+The plugin never builds the adapter itself; install and update do, through the manifest's `build`, a directory install leaves it to whoever owns the checkout, and a host that points `adapterExecutable` somewhere has built it however it likes.
+The surface reports whether the build witness is there, and whether the executable exists and can be run, because that is what a spawn failure will otherwise say opaquely.
 
 A plugin session sees every provider in `providers.snapshot()`, custom and plugin-registered alike.
 The daemon filters through `isProviderVisibleToClient`, which passes anything whose client declares `all_providers` or an `appVersion` of at least 0.1.45; the plugin's own client declares both, the second from the daemon version the initialize message carries.

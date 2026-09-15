@@ -4,11 +4,20 @@ import { z } from "zod";
 export const StatusSchema = z.object({
   /** The checkout this plugin was installed from, or null when it could not be identified. */
   repoRoot: z.string().nullable(),
-  /** Why there is no checkout to manage; everything below is meaningless while this is set. */
-  problem: z.string().nullable(),
+  /**
+   * Why there is no checkout. Advisory rather than fatal since the adapter's path became a setting:
+   * a host pointed at an adapter it built elsewhere has no checkout and nothing wrong with it, so
+   * what is broken — if anything is — is `adapter.problem`.
+   */
+  checkoutProblem: z.string().nullable(),
   adapter: z.object({
+    /** The executable the provider spawns, or null when neither a setting nor a checkout names one. */
     binary: z.string().nullable(),
+    /** Where that path came from, or null when there is none. */
+    source: z.enum(["configured", "checkout"]).nullable(),
     built: z.boolean(),
+    /** Why it cannot be run — missing, not executable, not built — or null when it can. */
+    problem: z.string().nullable(),
   }),
   host: z.object({
     node: z.string(),

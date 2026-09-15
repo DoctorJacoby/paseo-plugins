@@ -12,7 +12,7 @@ import { SessionsSection } from "./sessions.tsx";
 import { RemoveStateSection } from "./uninstall.tsx";
 import { LegacyProviderSection } from "./upgrade.tsx";
 import { MAX_CONTENT_WIDTH, fontSize, leading, spacing } from "./theme.ts";
-import { Monospace, ReadingRow, adapterReading, claudeReading } from "./status.tsx";
+import { Monospace, ReadingRow, adapterReading, adapterSourceHint, claudeReading } from "./status.tsx";
 import { usePalette } from "./ui.tsx";
 
 export const STATUS_QUERY_KEY = [PLUGIN_ID, "status"];
@@ -52,9 +52,9 @@ export function ClaudeTtySurface({ theme, layout, navigation }: PluginSurfacePro
         paddingBottom: spacing[8],
       }}
     >
-      {status.problem === null ? null : (
+      {status.checkoutProblem === null || status.adapter.source === "configured" ? null : (
         <SettingsSection title="Checkout">
-          <Monospace palette={palette} text={status.problem} />
+          <Monospace palette={palette} text={status.checkoutProblem} />
           <Text
             style={{
               color: palette.foregroundMuted,
@@ -64,7 +64,9 @@ export function ClaudeTtySurface({ theme, layout, navigation }: PluginSurfacePro
             }}
           >
             This plugin runs the adapter built inside the checkout it was installed from, and finds
-            that checkout through the daemon's own record of where it put this plugin.
+            that checkout through the daemon's own record of where it put this plugin. Setting an
+            adapter executable in this plugin's settings runs one from anywhere instead, and this
+            stops mattering.
           </Text>
         </SettingsSection>
       )}
@@ -75,6 +77,8 @@ export function ClaudeTtySurface({ theme, layout, navigation }: PluginSurfacePro
         <SettingsCard>
           <SettingsRow label="Provider" hint={`Registered by this plugin as "${PROVIDER_LABEL}"`} />
           <ReadingRow palette={palette} title="Executable" reading={adapterReading(status)} />
+          <SettingsRow label="Comes from" hint={adapterSourceHint(status)} />
+          {/* Still worth a row when the executable is configured: it is where an update builds. */}
           <SettingsRow label="Checkout" hint={status.repoRoot ?? "Unknown"} />
         </SettingsCard>
       </SettingsSection>

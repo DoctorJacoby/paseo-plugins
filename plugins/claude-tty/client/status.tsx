@@ -17,10 +17,19 @@ export function toneColor(palette: Palette, tone: Tone): string {
 export type Reading = { hint: string; tone: Tone };
 
 export function adapterReading(status: StatusPayload): Reading {
-  if (status.adapter.binary === null) return { hint: "No checkout to look in", tone: "danger" };
-  return status.adapter.built
+  if (status.adapter.binary === null) return { hint: "No adapter to run — set one in this plugin's settings", tone: "danger" };
+  // The server phrases every way this can be wrong, because it is the side that knows which of them
+  // it is; a reading is good exactly when it said nothing.
+  return status.adapter.problem === null
     ? { hint: status.adapter.binary, tone: "ok" }
-    : { hint: `${status.adapter.binary} is not built — run the build in the checkout`, tone: "danger" };
+    : { hint: status.adapter.problem, tone: "danger" };
+}
+
+/** Where the executable came from, which is the difference between a path to fix and one to ignore. */
+export function adapterSourceHint(status: StatusPayload): string {
+  if (status.adapter.source === "configured") return "Set in this plugin's settings";
+  if (status.adapter.source === "checkout") return "The adapter in the checkout this plugin was installed from";
+  return "Unset, and no checkout to fall back on";
 }
 
 export function claudeReading(status: StatusPayload): Reading {
