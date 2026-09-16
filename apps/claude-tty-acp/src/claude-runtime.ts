@@ -67,11 +67,22 @@ const COMPLETION_DISMISS = " ";
 // empties it, and costs nothing on the empty box that is the ordinary case.
 const CLEAR_INPUT_LINE = "\u0015";
 // Ctrl-U kills the line the cursor is on, and that is one *visual* line: Claude word-wraps a prompt too long
-// for the width, and a single key then takes the last of those lines and leaves the rest sitting there. A box
-// is emptied by one key per line it has grown to, and since it is drawn on the screen it can never have grown
-// past the height of it -- so a screenful of them empties any box, in one write, every key past the last line
-// landing on an empty box where Ctrl-U does nothing.
-const CLEAR_INPUT_BOX = CLEAR_INPUT_LINE.repeat(TERMINAL_ROWS);
+// for the width, and a single key then takes the last of those lines and leaves the rest sitting there. So a
+// box is emptied by one key per line it has grown to, and since it is drawn on the screen it can never have
+// grown past the height of it, which is the bound below.
+//
+// They have to arrive as keys, which means one key per write with a gap behind it. A screenful written in one
+// go reaches Claude as *text*: the 40 control characters land in the input box as 40 literal U+0015 and go to
+// Claude with the prompt, which is a clear that prepends garbage rather than clearing anything. Measured on
+// Claude Code v2.1.269 and visible in its own transcripts -- around 60 prompts since 2026-09-13 begin with
+// exactly forty U+0015, which `jq 'select(.type=="user") | .message.content | explode | index(21)'` reads out
+// of `~/.claude/projects/*/*.jsonl`.
+const CLEAR_INPUT_KEY_MS = 25;
+// How many readings of an empty box end the clear. The screen is sampled rather than followed, so a single
+// empty reading can be a render that has not caught up with a paste; a few in a row, a key apart, are the
+// cheapest evidence there is that the box really is empty. A box the screen never shows empty -- a terminal
+// nothing has painted, a reading that keeps coming back full -- takes the whole screenful and stops there.
+const CLEAR_INPUT_CONFIRMATIONS = 3;
 const ESCAPE = "\u001b";
 const CARRIAGE_RETURN = "\r";
 const CONTROL_D = "\u0004";
@@ -123,6 +134,7 @@ export type RuntimeDependencies = {
   submitDelayMs?: number;
   latePasteMs?: number;
   dialogDismissMs?: number;
+  clearInputKeyMs?: number;
   transcriptPollIntervalMs?: number;
   workspaceTrustKeyDelayMs?: number;
   workspaceTrustSelectionTimeoutMs?: number;
@@ -166,6 +178,7 @@ export class ClaudeRuntime {
   private readonly submitDelayMs: number;
   private readonly latePasteMs: number;
   private readonly dialogDismissMs: number;
+  private readonly clearInputKeyMs: number;
   private readonly transcriptPollIntervalMs: number | undefined;
   private readonly workspaceTrustKeyDelayMs: number;
   private readonly workspaceTrustSelectionTimeoutMs: number;
@@ -243,6 +256,7 @@ export class ClaudeRuntime {
     this.submitDelayMs = dependencies.submitDelayMs ?? SUBMIT_DELAY_MS;
     this.latePasteMs = dependencies.latePasteMs ?? LATE_PASTE_MS;
     this.dialogDismissMs = dependencies.dialogDismissMs ?? DIALOG_DISMISS_MS;
+    this.clearInputKeyMs = dependencies.clearInputKeyMs ?? CLEAR_INPUT_KEY_MS;
     this.transcriptPollIntervalMs = dependencies.transcriptPollIntervalMs;
     this.workspaceTrustKeyDelayMs = dependencies.workspaceTrustKeyDelayMs ?? WORKSPACE_TRUST_KEY_DELAY_MS;
     this.workspaceTrustSelectionTimeoutMs = dependencies.workspaceTrustSelectionTimeoutMs ?? WORKSPACE_TRUST_SELECTION_TIMEOUT_MS;
@@ -825,24 +839,40 @@ export class ClaudeRuntime {
    * likely to notice is not theirs. Measured against Claude Code v2.1.269 at this terminal size: a
    * 193-character prompt wraps after 115, and one Ctrl-U leaves exactly those 115 characters behind.
    *
-   * The keys go in whatever the screen says, because the screen is sampled and a paste too recent to
-   * have been rendered is exactly the residue worth clearing; the snapshot is read only to name it in
-   * the log, since a box that had anything in it is worth a line either way. That sampling is also why
-   * the box is not cleared a line at a time and read back between keys: the residue worth clearing is
-   * the one the screen cannot yet see, so the count cannot be taken from it, and a whole screenful is
-   * sent blind instead.
+   * Those keys go one write at a time. Written as one string they are not keys at all: Claude reads the
+   * burst as pasted text and puts every one of the 40 control characters into the box, so the clear that
+   * was meant to empty it is what fills it, and the prompt goes to Claude behind forty U+0015. See the
+   * constants above for the evidence in Claude's own transcripts.
+   *
+   * The box is read back between keys, which is also what ends the run early -- an empty box is the
+   * ordinary case and a key on one does nothing, so paying 40 keys for it would put a second on the front
+   * of every prompt. The reading is not trusted on its own, because the screen is sampled and a paste too
+   * recent to have been rendered is exactly the residue worth clearing: the run ends on a few empty
+   * readings in a row, and a box that never reads empty gets the screenful the bound allows and no more.
    */
-  private clearInputBox(): void {
+  private async clearInputBox(): Promise<void> {
     const held = inputBoxContent(this.screen.snapshot());
+    let keys = 0;
+    let empties = 0;
+    while (keys < TERMINAL_ROWS && empties < CLEAR_INPUT_CONFIRMATIONS) {
+      this.pty?.write(CLEAR_INPUT_LINE);
+      keys += 1;
+      await delay(this.clearInputKeyMs);
+      // A screen with no input box on it at all -- a terminal Claude has painted nothing to yet -- says
+      // nothing is being held any more than an empty box does, and is counted the same way.
+      empties = (inputBoxContent(this.screen.snapshot()) || "") === "" ? empties + 1 : 0;
+    }
     if (held) {
       writeLog({
         level: "warn",
         message: "Cleared something out of Claude's input box before sending a prompt",
         sessionId: this.sessionId,
         held: held.slice(0, PROMPT_ECHO_CHARS),
+        keys,
+        // Whether the box was empty when the keys stopped, rather than the run simply having run out.
+        emptied: empties >= CLEAR_INPUT_CONFIRMATIONS,
       });
     }
-    this.pty?.write(CLEAR_INPUT_BOX);
   }
 
   /**
@@ -856,12 +886,12 @@ export class ClaudeRuntime {
   private async submit(text: string): Promise<void> {
     const activityBefore = this.activityAt;
     const echo = promptEcho(text);
-    const paste = (): void => {
-      this.clearInputBox();
+    const paste = async (): Promise<void> => {
+      await this.clearInputBox();
       this.pty?.write(`${BRACKETED_PASTE_START}${text}${COMPLETION_DISMISS}${BRACKETED_PASTE_END}`);
     };
     if ((await this.takeTheKeyboardBack(activityBefore)) === "delivered") return;
-    paste();
+    await paste();
     let pasted = await this.screenSettles((screen) => inputBoxHolds(screen, echo), PASTE_ECHO_MS);
     for (let attempt = 0; attempt < SUBMIT_ATTEMPTS; attempt += 1) {
       await delay(this.submitDelayMs);
@@ -874,7 +904,7 @@ export class ClaudeRuntime {
         if (keyboard === "dismissed") {
           // The paste went into the question rather than into the box, so it goes again now the box has
           // the keys back; Claude has nothing of this prompt yet, and the key below would send an empty box.
-          paste();
+          await paste();
           pasted = await this.screenSettles((screen) => inputBoxHolds(screen, echo), PASTE_ECHO_MS);
           continue;
         }

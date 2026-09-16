@@ -13,9 +13,10 @@ import { subagentsDirectory } from "./subagent-transcript.ts";
 import { TERMINAL_COLS, TERMINAL_ROWS } from "./terminal-screen.ts";
 import { escapeProjectDirName } from "./transcript-reader.ts";
 
-/** What the runtime clears Claude's input box with before every paste: Ctrl-U once per line the box could have grown to. */
+/** What the runtime clears Claude's input box with before every paste: Ctrl-U, a key per write, until the box reads empty. */
 const CLEAR_INPUT_LINE = "\u0015";
-const CLEAR_INPUT_BOX = CLEAR_INPUT_LINE.repeat(TERMINAL_ROWS);
+/** The clear stops after this many readings of an empty box, which is all an empty one costs. */
+const CLEAR_INPUT_CONFIRMATIONS = 3;
 
 class FakePty {
   readonly pid: number;
@@ -26,10 +27,10 @@ class FakePty {
   /**
    * The same without that clear. Nearly every test here counts or names the writes one prompt makes, and
    * a key sent ahead of all of them says nothing about any one of them; the tests about the clear itself
-   * read `keystrokes`.
+   * read `keystrokes`, through `keySequence` below.
    */
   get writes(): string[] {
-    return this.keystrokes.filter((write) => write !== CLEAR_INPUT_BOX);
+    return this.keystrokes.filter((write) => write !== CLEAR_INPUT_LINE);
   }
 
   private readonly dataHandlers: Array<(data: string) => void> = [];
@@ -68,6 +69,29 @@ class FakePty {
   emitExit(): void {
     for (const handler of this.exitHandlers) handler({ exitCode: 0 });
   }
+}
+
+/**
+ * The keys a prompt sent, with each run of clear keys collapsed into a single `clear`. The clear is one
+ * key per write now -- a burst of them reaches Claude as text rather than as keys -- and how many it takes
+ * is whatever the box on the screen said, so a test naming the writes around it reads that run as one
+ * thing, and the tests about the clear itself count `clearKeys`.
+ */
+function keySequence(keystrokes: string[]): string[] {
+  const sequence: string[] = [];
+  for (const key of keystrokes) {
+    if (key === CLEAR_INPUT_LINE) {
+      if (sequence.at(-1) !== "clear") sequence.push("clear");
+      continue;
+    }
+    sequence.push(key);
+  }
+  return sequence;
+}
+
+/** How many keys the clear took, which is bounded by the height of the screen. */
+function clearKeys(keystrokes: string[]): number {
+  return keystrokes.filter((key) => key === CLEAR_INPUT_LINE).length;
 }
 
 type SpawnRecord = {
@@ -279,6 +303,7 @@ test("asks through ACP before accepting Claude workspace trust", async () => {
     startupTimeoutMs: 500,
     readinessTimeoutMs: 0,
     submitDelayMs: 0, contextRefreshTimeoutMs: 0,
+    clearInputKeyMs: 0,
     workspaceTrustKeyDelayMs: 0,
     workspaceTrustSelectionTimeoutMs: 50,
   });
@@ -740,16 +765,19 @@ test("clears what an interrupt left in Claude's input box before pasting the nex
     setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
     return pty;
   };
-  agent = new ClaudeTtyAgent(createConnection([]), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, contextRefreshTimeoutMs: 0 });
+  agent = new ClaudeTtyAgent(createConnection([]), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, contextRefreshTimeoutMs: 0, clearInputKeyMs: 0 });
 
   try {
     const session = await agent.newSession({ cwd: "/work/clear", mcpServers: [] });
     const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }] });
     await waitFor(() => pty !== undefined && pty.writes.length === 2);
     // The clear goes first, so what Claude reads is this prompt and not it run together with the old one.
-    assert.deepEqual(pty.keystrokes, [CLEAR_INPUT_BOX, "\u001b[200~hello \u001b[201~", "\r"]);
-    // A key per line of the box, because Ctrl-U only kills the line the cursor is on and Claude wraps a long prompt across several.
-    assert.equal(pty.keystrokes[0], CLEAR_INPUT_LINE.repeat(TERMINAL_ROWS));
+    assert.deepEqual(keySequence(pty.keystrokes), ["clear", "\u001b[200~hello \u001b[201~", "\r"]);
+    // A key per line of the box, because Ctrl-U only kills the line the cursor is on and Claude wraps a long
+    // prompt across several; a box this fake never redraws is the case that runs the bound out.
+    assert.equal(clearKeys(pty.keystrokes), TERMINAL_ROWS);
+    // And each of them its own write: in one write Claude reads them as text and types them into the box.
+    assert.ok(pty.keystrokes.every((key) => key === CLEAR_INPUT_LINE || !key.includes(CLEAR_INPUT_LINE)));
     await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
     assert.deepEqual(await turn, { stopReason: "end_turn" });
   } finally {
@@ -776,8 +804,9 @@ test("clears the input box even when nothing is showing in it", async () => {
     const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }] });
     await waitFor(() => pty !== undefined && pty.writes.length === 2);
     // Unconditional, because the screen is sampled: a paste too recent to have been drawn is exactly the
-    // residue worth clearing, and an empty box costs nothing to clear.
-    assert.equal(pty.keystrokes[0], CLEAR_INPUT_BOX);
+    // residue worth clearing, and an empty box costs only the keys that confirm it is one.
+    assert.equal(keySequence(pty.keystrokes)[0], "clear");
+    assert.equal(clearKeys(pty.keystrokes), CLEAR_INPUT_CONFIRMATIONS);
     await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
     assert.deepEqual(await turn, { stopReason: "end_turn" });
   } finally {
@@ -831,6 +860,59 @@ test("clears a residue Claude had wrapped, not just the last line of it", async 
     // The whole of the old message went, not just the line the cursor was on. One Ctrl-U would have left
     // the front of it in the box, and Claude would have read that run together with this prompt.
     assert.deepEqual(submitted, ["hello "]);
+    // Three keys for the three lines it had grown to, and two more for the readings that end the run --
+    // the third of those readings is the one the last of the three keys made. The bound is a screenful;
+    // what a clear costs on a box the screen can be read is what the box was holding.
+    assert.equal(clearKeys(pty.keystrokes), 3 + CLEAR_INPUT_CONFIRMATIONS - 1);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+  } finally {
+    await agent.close();
+    await rm(runtimeRoot, { force: true, recursive: true });
+  }
+});
+
+test("clears the box a key at a time, because Claude reads a burst of them as text", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-clear-keys-test-"));
+  let agent!: ClaudeTtyAgent;
+  let pty!: FakePty;
+  const submitted: string[] = [];
+
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    // Claude v2.1.269 as it reads what arrives on its stdin: a write carrying the one control character is
+    // that key, and a write carrying more than one character is text and goes into the box as itself. That
+    // is how a screenful of Ctrl-U written in one go came to stand at the head of the prompt behind it --
+    // around 60 prompts in ~/.claude/projects since 2026-09-13 begin with exactly forty literal U+0015.
+    let box = "residue";
+    const draw = (): void => pty.emitData(`\u001b[2J\u001b[H\u276f ${box}\r\n  \u23f8 manual mode on\r\n`);
+    pty = new FakePty(6350, (text) => {
+      const paste = /^\u001b\[200~(.*)\u001b\[201~$/s.exec(text);
+      if (text === CLEAR_INPUT_LINE) box = "";
+      else if (paste) box += paste[1]!;
+      else if (text === "\r") {
+        submitted.push(box);
+        box = "";
+      } else box += text;
+      draw();
+    });
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    setImmediate(draw);
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(createConnection([]), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, contextRefreshTimeoutMs: 0 });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/clear-keys", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }] });
+    await waitFor(() => submitted.length > 0);
+    // What Claude was handed is the prompt, with neither the residue in front of it nor the keys that took
+    // the residue away. A single write of forty of them lands here as forty characters of prompt.
+    assert.deepEqual(submitted, ["hello "]);
+    assert.ok(!submitted[0]!.includes(CLEAR_INPUT_LINE));
+    // Every clear key its own write, and nothing else carrying one.
+    assert.ok(pty.keystrokes.every((key) => !key.includes(CLEAR_INPUT_LINE) || key === CLEAR_INPUT_LINE));
+    assert.ok(clearKeys(pty.keystrokes) > 0);
     await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
     assert.deepEqual(await turn, { stopReason: "end_turn" });
   } finally {
@@ -892,7 +974,7 @@ test("closes a question Claude has open, then sends the prompt into the box behi
     await waitFor(() => pty !== undefined && pty.writes.length === 3);
     // The question is closed before a single key of the prompt goes anywhere near it: the clear would
     // walk its selection, the space that ends the paste would toggle the checkbox, and Enter would confirm.
-    assert.deepEqual(pty.keystrokes, [ESCAPE_KEY, CLEAR_INPUT_BOX, "\u001b[200~commit this \u001b[201~", "\r"]);
+    assert.deepEqual(keySequence(pty.keystrokes), [ESCAPE_KEY, "clear", "\u001b[200~commit this \u001b[201~", "\r"]);
     await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
     assert.deepEqual(await turn, { stopReason: "end_turn" });
   } finally {
@@ -977,11 +1059,11 @@ test("re-pastes a prompt the question behind it swallowed, instead of sending an
     await waitFor(() => pty !== undefined && pty.writes.length === 4);
     // The submit key was withheld while the question was up, and the prompt pasted again once it was gone:
     // Claude had none of it, and Enter on the empty box behind the question would have sent nothing.
-    assert.deepEqual(pty.keystrokes, [
-      CLEAR_INPUT_BOX,
+    assert.deepEqual(keySequence(pty.keystrokes), [
+      "clear",
       "\u001b[200~commit this \u001b[201~",
       ESCAPE_KEY,
-      CLEAR_INPUT_BOX,
+      "clear",
       "\u001b[200~commit this \u001b[201~",
       "\r",
     ]);
@@ -1017,7 +1099,7 @@ test("sends the prompt as usual when Claude says nothing else has the keyboard",
     const session = await agent.newSession({ cwd: "/work/no-dialog", mcpServers: [] });
     const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "commit this" }] });
     await waitFor(() => pty !== undefined && pty.writes.length === 2);
-    assert.deepEqual(pty.keystrokes, [CLEAR_INPUT_BOX, "\u001b[200~commit this \u001b[201~", "\r"]);
+    assert.deepEqual(keySequence(pty.keystrokes), ["clear", "\u001b[200~commit this \u001b[201~", "\r"]);
     await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
     assert.deepEqual(await turn, { stopReason: "end_turn" });
   } finally {
@@ -1400,7 +1482,7 @@ test("stays ready once a status line has taken Claude's shortcut hint away", asy
     setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
     return pty;
   };
-  agent = new ClaudeTtyAgent(createConnection([]), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), startupTimeoutMs: 500, readinessTimeoutMs: 1_000, submitDelayMs: 0, contextRefreshTimeoutMs: 0 });
+  agent = new ClaudeTtyAgent(createConnection([]), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), startupTimeoutMs: 500, readinessTimeoutMs: 1_000, submitDelayMs: 0, contextRefreshTimeoutMs: 0, clearInputKeyMs: 0 });
 
   try {
     const session = await agent.newSession({ cwd: "/work/ready", mcpServers: [] });
@@ -3063,6 +3145,7 @@ test("asks through ACP before accepting Claude's bypass permissions disclaimer",
     readinessTimeoutMs: 0,
     submitDelayMs: 0,
     contextRefreshTimeoutMs: 0,
+    clearInputKeyMs: 0,
     bypassPermissionsKeyDelayMs: 0,
     bypassPermissionsSelectionTimeoutMs: 50,
   });
@@ -3150,6 +3233,7 @@ test("fails the start rather than run in another mode when the bypass disclaimer
     readinessTimeoutMs: 0,
     submitDelayMs: 0,
     contextRefreshTimeoutMs: 0,
+    clearInputKeyMs: 0,
     bypassPermissionsKeyDelayMs: 0,
     bypassPermissionsSelectionTimeoutMs: 50,
   });
