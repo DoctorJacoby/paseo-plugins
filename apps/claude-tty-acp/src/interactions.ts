@@ -73,6 +73,12 @@ export class InteractionBridge {
   private readonly connection: AgentSideConnection;
   private readonly pendingTools: PendingTool[] = [];
   private readonly pendingRequests = new Set<Deferred<RequestPermissionResponse>>();
+  /**
+   * The cards something is actually waiting on: Claude blocked in a hook, or blocked on a question it
+   * drew in its own terminal. A card that only tells somebody something is not one of these -- see
+   * `openRequest` -- and must not make a session look busy.
+   */
+  private readonly blockingRequests = new Set<Deferred<RequestPermissionResponse>>();
   private readonly liveInteractions = new Map<string, Promise<InteractionOutcome>>();
   private readonly autoAccept: () => Promise<boolean>;
 
@@ -83,9 +89,9 @@ export class InteractionBridge {
     this.autoAccept = autoAccept;
   }
 
-  /** Something is waiting on a person: a card is open in Paseo and Claude is blocked on the hook behind it. */
+  /** Something is waiting on a person: a card is open in Paseo and Claude is held up behind it. */
   get pending(): boolean {
-    return this.pendingRequests.size > 0;
+    return this.blockingRequests.size > 0;
   }
 
   beginTurn(): void {
@@ -96,6 +102,7 @@ export class InteractionBridge {
   cancelPending(): void {
     for (const pending of this.pendingRequests) pending.resolve({ outcome: { outcome: "cancelled" } });
     this.pendingRequests.clear();
+    this.blockingRequests.clear();
   }
 
   requestWorkspaceTrust(): Promise<boolean> {
@@ -285,17 +292,28 @@ export class InteractionBridge {
    * them -- and the card then stands for a question nobody is asking. `withdraw` is how the caller
    * says so. It resolves this side as cancelled the way `cancelPending` does, and only this one rather
    * than every card at once; telling the client is the caller's, because ACP has no way to say it.
+   *
+   * `blocking: false` is for a card that only says something happened. Nothing is held up behind one --
+   * Claude has already done the thing it is about -- so it must not read as a session somebody is still
+   * answering for: that is what defers a suspension, and a card nobody clicks would defer it forever.
    */
-  openRequest(params: { toolCall: ToolCallUpdate; options: PermissionOption[] }): {
+  openRequest(
+    params: { toolCall: ToolCallUpdate; options: PermissionOption[] },
+    options: { blocking?: boolean } = {},
+  ): {
     response: Promise<RequestPermissionResponse>;
     withdraw: () => void;
   } {
     const cancellation = createDeferred<RequestPermissionResponse>();
     this.pendingRequests.add(cancellation);
+    if (options.blocking !== false) this.blockingRequests.add(cancellation);
     const response = Promise.race([
       this.connection.requestPermission({ sessionId: this.sessionId, ...params }),
       cancellation.promise,
-    ]).finally(() => this.pendingRequests.delete(cancellation));
+    ]).finally(() => {
+      this.pendingRequests.delete(cancellation);
+      this.blockingRequests.delete(cancellation);
+    });
     return {
       response,
       withdraw: () => cancellation.resolve({ outcome: { outcome: "cancelled" } }),

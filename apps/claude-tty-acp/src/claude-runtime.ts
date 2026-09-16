@@ -504,16 +504,22 @@ export class ClaudeRuntime {
    * is not a decision, and nothing is done with the answer: the point of it is the push.
    */
   private async acknowledge(id: string, title: string, description: string): Promise<void> {
-    const request = this.interactions.openRequest({
-      toolCall: {
-        toolCallId: id,
-        title,
-        kind: "other",
-        status: "pending",
-        rawInput: { notice: description },
+    const request = this.interactions.openRequest(
+      {
+        toolCall: {
+          toolCallId: id,
+          title,
+          kind: "other",
+          status: "pending",
+          rawInput: { notice: description },
+        },
+        options: [{ optionId: "acknowledge", name: "OK", kind: "reject_once" }],
       },
-      options: [{ optionId: "acknowledge", name: "OK", kind: "reject_once" }],
-    });
+      // Nothing is held up behind this card, so a session with one open is not a session anybody is
+      // waiting for: it goes on suspending on its own schedule, and a question Claude opens afterwards
+      // still gets a card of its own rather than being skipped as already asked about.
+      { blocking: false },
+    );
     this.acknowledgements.set(id, request.withdraw);
     const expiry = setTimeout(() => void this.withdrawAcknowledgement(id), ACKNOWLEDGEMENT_MS);
     expiry.unref();

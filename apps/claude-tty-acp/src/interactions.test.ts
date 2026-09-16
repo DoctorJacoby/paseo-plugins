@@ -382,6 +382,45 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   while (!predicate()) await new Promise((resolve) => setImmediate(resolve));
 }
 
+test("takes a card back down on its own, and tells a session apart from one that is waiting on somebody", async () => {
+  const requests: RequestPermissionRequest[] = [];
+  const bridge = new InteractionBridge(
+    "session-1",
+    "/work",
+    connectionWith(async (request) => {
+      requests.push(request);
+      // The client goes on showing it: ACP has no way for an agent to take a permission request back,
+      // which is the whole reason `withdraw` exists and the reason the plugin ends it on Paseo's side.
+      return new Promise<RequestPermissionResponse>(() => undefined);
+    }),
+  );
+
+  const question = bridge.openRequest({
+    toolCall: { toolCallId: "dialog-1", title: "Claude is asking something", kind: "other", status: "pending", rawInput: {} },
+    options: [{ optionId: "dialog-dismiss", name: "Dismiss (Esc)", kind: "reject_once" }],
+  });
+  // Claude is held up behind its own question, so this is a session somebody is being waited on for.
+  assert.equal(bridge.pending, true);
+  question.withdraw();
+  assert.deepEqual(await question.response, { outcome: { outcome: "cancelled" } });
+  assert.equal(bridge.pending, false);
+
+  const told = bridge.openRequest(
+    {
+      toolCall: { toolCallId: "ack-1", title: "Model switched: Fable 5 → Opus 4.8", kind: "other", status: "pending", rawInput: {} },
+      options: [{ optionId: "acknowledge", name: "OK", kind: "reject_once" }],
+    },
+    { blocking: false },
+  );
+  // A card that only says something happened is not a session waiting on anybody: nothing is held up
+  // behind it, and reading it as busy would defer this session's suspension until somebody clicked it.
+  assert.equal(bridge.pending, false);
+  assert.equal(requests.length, 2);
+  // It is still let go of with everything else at a turn boundary, so a prompt is never behind one.
+  bridge.cancelPending();
+  assert.deepEqual(await told.response, { outcome: { outcome: "cancelled" } });
+});
+
 test("keeps the tools waiting for a permission bounded, so a session working between prompts does not grow one", async () => {
   const requests: RequestPermissionRequest[] = [];
   const bridge = new InteractionBridge(
