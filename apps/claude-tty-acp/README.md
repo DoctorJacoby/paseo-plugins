@@ -275,6 +275,13 @@ Answering one of these routinely opens the next — `/rewind` asks which checkpo
 
 A list longer than the window Claude draws it in is offered as what the window was showing, and the card says so; `↑ 4 more above` is a fact about the window rather than a row or part of the question, so it is kept out of both.
 Which rows those are changes while the card is up — the list scrolls — so answering looks for the row wherever the window has moved to: the marker is walked one way until the row is drawn again and then the other, and only a row neither end turns up is escaped.
+
+What says a card is still answerable is not the words on the screen.
+Claude rewrites its own dialog while it is up: a relative timestamp ticks, the line under the question follows whichever row the marker is on, and that row grows what it can do inline — `Summarize from here` becomes `Summarize from here: add context (optional)` once the marker reaches it.
+A reading taken a minute later agrees with the carded one about almost none of that, and requiring it to was dropping answers to questions nobody had closed.
+So a card belongs to a *waiting episode*: Claude holds the keyboard from the moment it opens a question until whatever that opens is finally answered, every poll that finds it no longer waiting starts the next episode, and an answer from an episode that has ended presses nothing.
+The title still has to match, the card's own id is one ACP request answered once, and the chosen row is found by what it starts with rather than by what it said — which is how a row Claude has rewritten is still the row that was offered.
+Two rows that begin the same way and no exact match is nothing found, and nothing found is an escape rather than a guess.
 Rows Claude never drew are not offered at all, because enumerating them would mean walking its selection around a question nobody has answered yet, and this whole surface exists because keys landing in Claude's dialogs is what went wrong in the first place.
 
 The card is taken back down whenever the question stops being one this session is waiting on: Claude times two of its nudges out after thirty seconds, a prompt arriving closes whatever is open to get the keyboard back, and a turn ending lets go of every card the adapter was waiting on at once.

@@ -16,6 +16,31 @@ const DIALOG_SCREEN = [
 const IDLE_SCREEN = ["❯", "  ⏸ manual mode on"].join("\n");
 
 /**
+ * The question `/rewind` asks once a checkpoint is chosen, as one live session read it when the card
+ * went up and again when it was answered. Claude never closed it and rewrote nearly all of it: the
+ * timestamp ticked, the line under the question followed the marker, and the marked row grew what it
+ * can do inline. Requiring the words to match dropped the answer.
+ */
+function confirmDialog(options: { seconds: number; marked: number }): ScreenLine[] {
+  const rows = ["1. Restore conversation", "2. Summarize from here", "3. Summarize up to here", "4. Never mind"];
+  // Claude writes the row the marker is on as what it can do, not as what it is called.
+  if (options.marked === 1) rows[1] = "2. Summarize from here: add context (optional)";
+  return [
+    ["▔".repeat(96), "p153"],
+    ["   Rewind", "p153"],
+    ["   Confirm you want to restore to the point before you sent this message:", "default"],
+    ["Reply with exactly: THIRD", "p246"],
+    [`(${options.seconds}s ago)`, "p246"],
+    [options.marked === 1 ? "   Messages after this point will be summarized." : "   The conversation will be forked.", "p246"],
+    ...rows.map((row, index): [string, string | null] => [`   ${index === options.marked ? "❯ " : "  "}${row}`, index === options.marked ? "p153" : "default"]),
+    ["   Enter to continue · Esc to cancel", "p246"],
+  ].map(([text, colour]) => ({ text: text as string, colour: colour as string | null }));
+}
+
+/** Where `confirmDialog` draws its rows, for the marker to be moved between. */
+const CONFIRM_ROWS = [6, 7, 8, 9];
+
+/**
  * `/rewind` as a real Claude Code v2.1.269 drew it, colours included: two checkpoints' worth of rows
  * where one line is a row's own summary rather than a row, told apart by the grey it is written in.
  */
@@ -320,6 +345,51 @@ test("walks a list that scrolled to the row it was asked for, wherever the windo
   // Up first, where there was nothing, then back down to it.
   assert.deepEqual(scrolling.keys, ["up", "down", "down", "down", "enter"]);
 });
+test("answers a dialog Claude has rewritten under the card, rather than dropping the answer", async (t) => {
+  const rewriting = harness({ rows: CONFIRM_ROWS, answerTimeoutMs: 2_000 });
+  t.after(() => rewriting.watcher.stop());
+  rewriting.setScreen(confirmDialog({ seconds: 24, marked: 0 }));
+  rewriting.watcher.start();
+  rewriting.setWaitingFor("dialog open");
+  await waitFor(() => rewriting.permissions.length === 1);
+  assert.deepEqual(
+    rewriting.permissions[0]!.options.map((option) => option.name),
+    ["Dismiss (Esc)", "Restore conversation", "Summarize from here", "Summarize up to here", "Never mind"],
+  );
+
+  // A minute passes with the card up and nobody answering. Claude redraws the dialog it never closed:
+  // the timestamp has ticked, the description has followed the marker, and the marked row reads
+  // differently. It is the same question -- Claude has not stopped waiting for a moment.
+  rewriting.setScreen(confirmDialog({ seconds: 48, marked: 1 }));
+  rewriting.answer({ outcome: { outcome: "selected", optionId: "dialog-choice-3" } });
+
+  await waitFor(() => rewriting.keys.includes("enter") || rewriting.escapes > 0, 4_000);
+  // Down from the second row to "Never mind", and Enter on it -- not an escape, and not silence.
+  assert.deepEqual(rewriting.keys, ["down", "down", "enter"]);
+  assert.equal(rewriting.escapes, 0);
+});
+
+test("drops an answer that outlived the question it was for, and presses nothing", async (t) => {
+  const ended = harness({ rows: CONFIRM_ROWS, answerTimeoutMs: 2_000 });
+  t.after(() => ended.watcher.stop());
+  ended.setScreen(confirmDialog({ seconds: 24, marked: 0 }));
+  ended.watcher.start();
+  ended.setWaitingFor("dialog open");
+  await waitFor(() => ended.permissions.length === 1);
+
+  // Claude stops waiting -- the question was answered in its own terminal, or closed itself -- and a
+  // poll sees it. Whatever it opens next is a question of its own, so the answer to this card is not
+  // pressed into it.
+  ended.setWaitingFor(null);
+  await waitFor(() => ended.vendor.some((update) => update.method === CARD_WITHDRAWN_METHOD));
+  ended.setWaitingFor("dialog open");
+  ended.answer({ outcome: { outcome: "selected", optionId: "dialog-choice-3" } });
+
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.deepEqual(ended.keys, []);
+  assert.equal(ended.escapes, 0);
+});
+
 test("escapes the question when the card is dismissed, and when the row cannot be reached", async (t) => {
   const dismissed = harness();
   t.after(() => dismissed.watcher.stop());

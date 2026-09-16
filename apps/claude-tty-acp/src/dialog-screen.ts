@@ -71,6 +71,8 @@ const MAX_LABEL_CHARS = 120;
  * read the same; a sentence of description is the card's to show rather than the button's.
  */
 const MAX_LABEL_DETAIL = 16;
+/** How much of a row has to be shared before one row can stand for another it was drawn as. */
+const MIN_LABEL_MATCH = 4;
 
 const MARKER = /^(\s*)❯(\s?)(.*)$/;
 const NUMBERED = /^(\d+)[.)]\s+(.*)$/;
@@ -184,7 +186,33 @@ export function sameDialog(one: DialogReading | null, other: DialogReading | nul
 
 /** Whether the marker sits on this row now, which is what answering one waits for. */
 export function choiceSelected(screen: string | readonly ScreenLine[], label: string): boolean {
-  return readDialog(screen)?.choices.some((choice) => choice.selected && choice.label === label) === true;
+  return readDialog(screen)?.choices.some((choice) => choice.selected && labelMatches(choice.label, label)) === true;
+}
+
+/**
+ * Whether a row on screen is the row a card was answered with.
+ *
+ * Not equality, because Claude rewrites a row while its dialog is up: the row the marker is on grows
+ * what it can do inline, so `Summarize from here` becomes `Summarize from here: add context (optional)`
+ * the moment the marker reaches it. One being the start of the other is what holds across that, with a
+ * few characters required so that two short rows cannot pass for each other.
+ */
+export function labelMatches(row: string, chosen: string): boolean {
+  if (row === chosen) return true;
+  const [shorter, longer] = row.length <= chosen.length ? [row, chosen] : [chosen, row];
+  return shorter.length >= MIN_LABEL_MATCH && longer.startsWith(shorter);
+}
+
+/**
+ * Which row a card was answered with, or -1. An exact match wins; failing that a single row that
+ * starts the same way is it, and two are nothing -- a row this cannot name is one to escape rather
+ * than to guess at.
+ */
+export function findChoice(choices: readonly DialogChoice[], label: string): number {
+  const exact = choices.findIndex((choice) => choice.label === label);
+  if (exact >= 0) return exact;
+  const matched = choices.flatMap((choice, index) => (labelMatches(choice.label, label) ? [index] : []));
+  return matched.length === 1 ? matched[0]! : -1;
 }
 
 /** A title for the card: what Claude titled the dialog, and the best line there is where it did not. */

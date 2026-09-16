@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { choiceSelected, dialogIsReadable, dialogTitle, readDialog, sameDialog } from "./dialog-screen.ts";
+import { choiceSelected, dialogIsReadable, dialogTitle, findChoice, labelMatches, readDialog, sameDialog } from "./dialog-screen.ts";
 import type { ScreenLine } from "./terminal-screen.ts";
 
 /** A fixture written the way the screen hands its lines over: the text, and the colour it is drawn in. */
@@ -80,6 +80,41 @@ const REWIND_WINDOW_TWO = screen([
   ["   ❯ Reply with exactly: THIRD", "p153"],
   ["     No code changes", "p246"],
   ["    ↓ 1 more below", "p246"],
+  ["   Enter to continue · Esc to cancel", "p246"],
+]);
+
+/**
+ * The question `/rewind` asks once a checkpoint is chosen, in the two readings one live session took of
+ * it a minute apart. It is one dialog that never closed, and almost nothing about it held still: the
+ * timestamp ticks, the line under the question follows whichever row the marker is on, and that row
+ * grows what it can do inline.
+ */
+const CONFIRM_WHEN_CARDED = screen([
+  [RULE, "p153"],
+  ["   Rewind", "p153"],
+  ["   Confirm you want to restore to the point before you sent this message:", "default"],
+  ["Reply with exactly: THIRD", "p246"],
+  ["(24s ago)", "p246"],
+  ["   The conversation will be forked.", "p246"],
+  ["   The code will be unchanged.", "p246"],
+  ["   ❯ 1. Restore conversation", "p153"],
+  ["     2. Summarize from here", "default"],
+  ["     3. Summarize up to here", "default"],
+  ["     4. Never mind", "default"],
+  ["   Enter to continue · Esc to cancel", "p246"],
+]);
+
+const CONFIRM_WHEN_ANSWERED = screen([
+  [RULE, "p153"],
+  ["   Rewind", "p153"],
+  ["   Confirm you want to restore to the point before you sent this message:", "default"],
+  ["Reply with exactly: THIRD", "p246"],
+  ["(48s ago)", "p246"],
+  ["   Messages after this point will be summarized.", "p246"],
+  ["     1. Restore conversation", "default"],
+  ["   ❯ 2. Summarize from here: add context (optional)", "p153"],
+  ["     3. Summarize up to here", "default"],
+  ["     4. Never mind", "default"],
   ["   Enter to continue · Esc to cancel", "p246"],
 ]);
 
@@ -275,6 +310,36 @@ test("reads two windows of a scrolling list as the same dialog", () => {
     ["   Enter to continue · Esc to cancel", "p246"],
   ]);
   assert.ok(!sameDialog(readDialog(REWIND_WINDOW_ONE), readDialog(elsewhere)));
+});
+
+test("reads a dialog that rewrites itself while it is up as one dialog with two faces", () => {
+  const carded = readDialog(CONFIRM_WHEN_CARDED)!;
+  const later = readDialog(CONFIRM_WHEN_ANSWERED)!;
+  // The title is the one thing that holds still. The question does not -- the timestamp ticks and the
+  // line under it follows the marker -- which is why the words cannot say whether a card is still live.
+  assert.equal(carded.title, "Rewind");
+  assert.equal(later.title, "Rewind");
+  assert.notEqual(carded.question, later.question);
+  assert.ok(carded.question.includes("(24s ago)"));
+  assert.ok(later.question.includes("Messages after this point will be summarized."));
+});
+
+test("finds the row a card was answered with after Claude has rewritten it", () => {
+  const later = readDialog(CONFIRM_WHEN_ANSWERED)!;
+  // The marked row grew what it can do inline, and it is still the row that was offered.
+  assert.equal(findChoice(later.choices, "Summarize from here"), 1);
+  assert.ok(choiceSelected(CONFIRM_WHEN_ANSWERED, "Summarize from here"));
+  // The rows that did not change are found the way they always were.
+  assert.equal(findChoice(later.choices, "Never mind"), 3);
+  assert.equal(findChoice(later.choices, "Restore conversation"), 0);
+  // A row that is nowhere in the list is nowhere in the list.
+  assert.equal(findChoice(later.choices, "Reply with exactly: THIRD"), -1);
+  // Two rows that start the same way are not a match: a row this cannot name is one to escape.
+  assert.equal(findChoice([{ label: "Yes, keep it", detail: "", selected: false, number: null }, { label: "Yes, and remember", detail: "", selected: false, number: null }], "Yes,"), -1);
+  assert.ok(labelMatches("Summarize from here: add context (optional)", "Summarize from here"));
+  assert.ok(!labelMatches("Summarize up to here", "Summarize from here"));
+  // And a couple of characters in common is not a row being the same row.
+  assert.ok(!labelMatches("Nope", "N"));
 });
 
 test("stops following rows at the line that says which keys answer them", () => {

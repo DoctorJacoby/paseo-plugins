@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSideConnection, PermissionOption } from "@agentclientprotocol/sdk";
-import { choiceSelected, type DialogReading, dialogIsReadable, dialogTitle, readDialog, sameDialog } from "./dialog-screen.ts";
+import { choiceSelected, type DialogReading, dialogIsReadable, dialogTitle, findChoice, readDialog, sameDialog } from "./dialog-screen.ts";
 import type { ScreenLine } from "./terminal-screen.ts";
 import type { InteractionBridge } from "./interactions.ts";
 import { writeLog } from "./log.ts";
@@ -72,6 +72,8 @@ export type DialogWatcherOptions = {
 type PendingCard = {
   id: string;
   dialog: DialogReading;
+  /** The stretch of waiting this card was raised in; an answer that outlives it answers nothing. */
+  episode: number;
   withdraw: () => void;
 };
 
@@ -117,6 +119,14 @@ export class DialogWatcher {
   private answered: DialogReading | null = null;
   /** How many polls this wait has been up for without the screen showing anything to ask about. */
   private unreadable = 0;
+  /**
+   * Which stretch of waiting this is. Claude holds the keyboard from the moment it opens a question
+   * until whatever it opens is finally answered -- through a `/rewind` that asks twice, and through its
+   * own redrawing -- and every poll that finds it no longer waiting starts the next stretch. That is
+   * what says a card is still answerable: not the words on the screen, which tick and rewrite
+   * themselves while the card is up.
+   */
+  private episode = 1;
 
   constructor(options: DialogWatcherOptions) {
     this.options = options;
@@ -138,6 +148,8 @@ export class DialogWatcher {
     this.timer = null;
     this.carded = false;
     this.lastSeen = null;
+    // The process this was watching is going, so nothing raised under it can be answered any more.
+    this.episode += 1;
     const pending = this.pending;
     this.pending = null;
     pending?.withdraw();
@@ -173,6 +185,9 @@ export class DialogWatcher {
     try {
       const waitingFor = await this.options.waitingFor();
       if (waitingFor === null) {
+        // Claude has the keyboard back, so this stretch of waiting is over and the next question --
+        // even an identical one -- is a new one.
+        if (this.carded || this.pending) this.episode += 1;
         this.carded = false;
         this.lastSeen = null;
         this.unreadable = 0;
@@ -236,7 +251,7 @@ export class DialogWatcher {
       },
       options: dialogOptions(dialog),
     });
-    this.pending = { id, dialog, withdraw: request.withdraw };
+    this.pending = { id, dialog, episode: this.episode, withdraw: request.withdraw };
     this.carded = true;
     writeLog({
       level: "info",
@@ -253,6 +268,7 @@ export class DialogWatcher {
     });
     const response = await request.response;
     if (this.pending?.id !== id) return;
+    const episode = this.pending.episode;
     this.pending = null;
     if (response.outcome.outcome === "cancelled") {
       // Not this class's doing -- a turn ended, or a prompt started, and `cancelPending` let go of every
@@ -268,10 +284,10 @@ export class DialogWatcher {
       await this.withdrawCard(id, "the session let go of every card it was waiting on");
       return;
     }
-    await this.answer(dialog, response.outcome.optionId);
+    await this.answer(dialog, episode, response.outcome.optionId);
   }
 
-  private async answer(dialog: DialogReading, optionId: string): Promise<void> {
+  private async answer(dialog: DialogReading, episode: number, optionId: string): Promise<void> {
     if (optionId === DISMISS_OPTION_ID) {
       await this.escape("dismissed in Paseo");
       return;
@@ -283,7 +299,7 @@ export class DialogWatcher {
     }
     let outcome: "confirmed" | "gone" | "stuck";
     try {
-      outcome = await this.moveTo(dialog, choice.label);
+      outcome = await this.moveTo(dialog, episode, choice.label);
     } catch (error) {
       writeLog({ level: "warn", message: "Claude stopped before its question could be answered", sessionId: this.options.sessionId, choice: choice.label, error: errorMessage(error) });
       return;
@@ -293,9 +309,12 @@ export class DialogWatcher {
       // a no-op, and what it was answering against goes in the log, because this is the one outcome
       // here that cannot be read off the screen afterwards.
       const now = readDialog(this.options.lines());
+      const ended = this.episode !== episode;
       writeLog({
         level: "warn",
-        message: "Claude's question was answered after it stopped being the one on screen",
+        message: ended
+          ? "Claude's question was answered after it had stopped waiting for one"
+          : "Claude's question was answered after another took the screen",
         sessionId: this.options.sessionId,
         choice: choice.label,
         carded: { title: dialog.title, question: dialog.question, choices: dialog.choices.map((entry) => entry.label) },
@@ -346,16 +365,23 @@ export class DialogWatcher {
    * a session moves it -- so a row that is nowhere in the window is looked for rather than given up on:
    * the marker is walked one way, which is what scrolls the list, until the row is drawn again or the
    * end of the list is reached, and then the other way. Only a row neither end turns up is escaped.
+   *
+   * What says the card is still answerable is the stretch of waiting it was raised in, and the title.
+   * Not the words: Claude rewrites its own dialog while it is up -- a relative timestamp ticks, the
+   * description follows the marker, the marked row grows what it can do inline -- and a reading taken a
+   * minute later agrees with the carded one about almost none of it. Requiring the words was dropping
+   * answers to questions nobody had closed. The card's own id carries the rest of the safety: it is one
+   * ACP request, answered once, and a question that ended and came back is a new episode and a new card.
    */
-  private async moveTo(dialog: DialogReading, label: string): Promise<"confirmed" | "gone" | "stuck"> {
+  private async moveTo(dialog: DialogReading, episode: number, label: string): Promise<"confirmed" | "gone" | "stuck"> {
     const deadline = Date.now() + this.answerTimeoutMs;
     let searching: "up" | "down" = "up";
     let turned = 0;
     let previous = "";
     while (Date.now() < deadline) {
       const now = readDialog(this.options.lines());
-      if (!now || !sameDialog(now, dialog)) return "gone";
-      const target = now.choices.findIndex((choice) => choice.label === label);
+      if (this.episode !== episode || !now || now.title !== dialog.title) return "gone";
+      const target = findChoice(now.choices, label);
       const selected = now.choices.findIndex((choice) => choice.selected);
       if (selected < 0) return "stuck";
       if (target === selected) {
