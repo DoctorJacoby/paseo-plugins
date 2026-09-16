@@ -183,12 +183,21 @@ ACP permissions only ever end at the client: the agent sends `session/request_pe
 That is fine for everything a hook asks, because Claude is blocked on the hook until somebody answers.
 It is not fine for the cards the adapter raises for Claude's *own* terminal dialogs: Claude closes two of its nudges by itself after thirty seconds, and a prompt arriving closes whatever is open to get the keyboard back, so the card would be left standing for a question nobody is asking and nobody can make go away.
 
-`server/session-notices.ts` ends it where it can be ended — the daemon — by emitting the same `session.permission_resolved` the bridge emits for an answered one, with the id it would have used (`permission:<toolCallId>`).
-The bridge goes on holding its own entry for that id, which is why the adapter never reuses a tool call id for a card.
-That event is not an `AcpVendorUpdate` — the four it has are commands, config, timeline and notice — so it cannot come from a transformer, and the wrapper injects it into the connection's event stream instead, the way `server/tool-details.ts` rewrites items on their way out.
-The transformer and the wrapper are built by one factory because the transformer is what hears the adapter's notification and the wrapper is the only thing that can emit anything.
+`server/session-notices.ts` ends it where it can be ended — the daemon — by **answering** it: the wrapper sends the bridge a `session.permission` input for `permission:<toolCallId>` with a plain deny, which is the same input the daemon sends when a person answers a card.
+The bridge then does all of it — takes the entry out of its pending map, resolves the ACP request, and emits `session.permission_resolved` itself.
+Emitting only that event is not enough, and was measured not to be: the card left `paseo permit ls` and came back as pending the next time any card was raised, because the bridge still held it and the daemon rebuilds the pending list from what the bridge reports.
+The deny lands on the first declining option, which on every card the adapter withdraws is its Dismiss.
 
-It is wrapped innermost of the four, directly around the steer fallback, so what it injects travels out through every wrapper above it — `withPermissionCards` drops its own record of a card on exactly this event.
+Answering a card that is *not* pending is not harmless, which is why the cards still open are tracked in that wrapper from the bridge's own `session.permission` and `session.permission_resolved` events: `respondToPermission` throws `Unknown ACP permission`, and `send` never rejects — `emitOperationFailure` turns it into `session.runtime_failed` for the session, which the daemon reads as the whole session having fallen over.
+A withdrawal and a person can still answer the same card in the same instant, so a `session.runtime_failed` carrying that message is dropped on the way out; nothing else produces one, and it means a card was answered twice rather than that anything failed.
+The transformer and the wrapper are built by one factory because the transformer is what hears the adapter's notification and the wrapper is the only thing that can reach the connection.
+
+The model a session is on is the third thing in that file, and the third thing ACP has no word for: it carries a session's mode home over `current_mode_update` and nothing else about its configuration, so a model Claude swapped for itself — a message its safeguards flagged, retried on a fallback — has no way back to the picker.
+The bridge's `config` vendor update is the route, but it replaces the whole `ProviderConfigState` rather than patching one field, and a transformer is handed no state at all.
+So the wrapper keeps the last configuration the bridge published per session and the change is that snapshot with the model moved; a model the session's own catalogue does not list is ignored, since a picker set to an option it does not have is worse than a picker one switch out of date.
+It is a reading rather than a decision — the adapter's launch flag is untouched, so restarting the session puts the model back to the one that was chosen.
+
+It is wrapped innermost of the four, directly around the steer fallback, so the event the bridge emits for it travels out through every wrapper above — `withPermissionCards` drops its own record of a card on exactly that event.
 
 A notice is the easy half of the same file: `{ type: "notice", notice }` is a vendor update the bridge already turns into `session.notice`, which is a timeline notification rather than a message and sends no push.
 It is how something that happened *to* a session gets said — a question of Claude's dismissed to deliver a prompt — and a notice missing an id or a title is dropped rather than drawn empty.

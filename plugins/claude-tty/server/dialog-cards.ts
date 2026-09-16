@@ -34,7 +34,8 @@ export function dialogPermission(request: ProviderPermissionRequest): ProviderPe
     .join("\n\n");
   return {
     ...request,
-    title: question ?? request.title,
+    // The title is the dialog's own, which the adapter has already read off the screen; what it says
+    // under that title is the description, along with the dialog as drawn.
     description,
     ...(terminal === undefined ? {} : { detail: { type: "plain_text" as const, label: "Claude's terminal", text: terminal, icon: "wrench" } }),
   };

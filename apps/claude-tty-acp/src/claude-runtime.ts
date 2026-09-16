@@ -97,6 +97,7 @@ const ESCAPE = "\u001b";
 const CARRIAGE_RETURN = "\r";
 const CONTROL_D = "\u0004";
 const CURSOR_DOWN = "\u001b[B";
+const CURSOR_UP = "\u001b[A";
 const ENTER = "\r";
 const STARTUP_POLL_INTERVAL_MS = 25;
 // Claude re-renders its status line after the Stop hook rather than before it, measured at ~320ms, so the reading for the turn that just ended only lands once the file changes again.
@@ -270,8 +271,9 @@ export class ClaudeRuntime {
       interactions: this.interactions,
       waitingFor: () => claudeIsWaitingFor(this.pty?.pid, this.claudeConfigDir),
       screen: () => this.screen.snapshot(),
+      lines: () => this.screen.lines(),
       escape: () => this.pty?.write(ESCAPE),
-      answerMenu: (menu) => this.answerStartupMenu(menu),
+      press: (key) => this.pty?.write(key === "up" ? CURSOR_UP : key === "down" ? CURSOR_DOWN : ENTER),
       answeredByStartup: (screen) => isWorkspaceTrustScreen(screen) || isBypassPermissionsScreen(screen) || isStaleResumeScreen(screen),
       ...(dependencies.dialogPollMs === undefined ? {} : { pollIntervalMs: dependencies.dialogPollMs }),
       ...(dependencies.dialogAnswerKeyMs === undefined ? {} : { answerKeyMs: dependencies.dialogAnswerKeyMs }),

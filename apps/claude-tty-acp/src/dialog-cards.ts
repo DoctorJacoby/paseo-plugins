@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSideConnection, PermissionOption } from "@agentclientprotocol/sdk";
-import { choiceSelected, type DialogReading, dialogTitle, readDialog, sameDialog } from "./dialog-screen.ts";
+import { choiceSelected, type DialogReading, dialogIsReadable, dialogTitle, readDialog, sameDialog } from "./dialog-screen.ts";
+import type { ScreenLine } from "./terminal-screen.ts";
 import type { InteractionBridge } from "./interactions.ts";
 import { writeLog } from "./log.ts";
 import { sendCardWithdrawn, sendNotice } from "./vendor-updates.ts";
@@ -12,6 +13,15 @@ export const DIALOG_ANSWER_KEY_MS = 200;
 export const DIALOG_ANSWER_TIMEOUT_MS = 3_000;
 /** How long Claude is given to stop waiting once its question has been answered or dismissed. */
 export const DIALOG_SETTLE_MS = 1_500;
+/**
+ * How many polls a dialog gets to appear on the screen before it is carded from whatever is there.
+ *
+ * Claude writes its state file as it opens a dialog and draws the dialog a render later, so the first
+ * poll to see the wait routinely sees the screen from before it. Waiting for the screen to catch up
+ * costs a poll or two; carding what was there instead is a card titled after an empty input box.
+ * Bounded, because a dialog this can never read is still a dialog somebody has to be able to dismiss.
+ */
+const DIALOG_READ_ATTEMPTS = 5;
 const SETTLE_POLL_MS = 25;
 
 /**
@@ -26,14 +36,8 @@ export const DIALOG_INPUT_MARKER = "claudeDialog";
 export const DISMISS_OPTION_ID = "dialog-dismiss";
 export const CHOICE_OPTION_PREFIX = "dialog-choice-";
 
-/** The menu contract `ClaudeRuntime.answerStartupMenu` already answers Claude's startup dialogs with. */
-export type DialogMenu = {
-  onScreen: (screen: string) => boolean;
-  selected: (screen: string) => boolean;
-  keyDelayMs: number;
-  timeoutMs: number;
-  exited: string;
-};
+/** The keys answering a dialog is made of. */
+export type DialogKey = "up" | "down" | "enter";
 
 export type DialogWatcherOptions = {
   sessionId: string;
@@ -41,10 +45,13 @@ export type DialogWatcherOptions = {
   interactions: InteractionBridge;
   /** What Claude's own state file says has the keyboard, or null when nothing has. */
   waitingFor: () => Promise<string | null>;
+  /** The screen as text, for the log and for the startup dialogs, which are matched on their words. */
   screen: () => string;
+  /** The same screen with what colour says about each line, which is half of reading a dialog. */
+  lines: () => readonly ScreenLine[];
   /** The key that closes a dialog, straight into the PTY. */
   escape: () => void;
-  answerMenu: (menu: DialogMenu) => Promise<"confirmed" | "gone" | "stuck">;
+  press: (key: DialogKey) => void;
   /**
    * Whether the screen is showing one of the dialogs the adapter answers itself -- workspace trust,
    * the bypass disclaimer, the resume question. Those are answered on the startup path and must not
@@ -97,6 +104,14 @@ export class DialogWatcher {
   private carded = false;
   /** The last dialog seen on screen, which is what the notice for a dismissed one is written from. */
   private lastSeen: DialogReading | null = null;
+  /**
+   * The dialog whose card has just been answered. Answering one of these opens another often enough to
+   * be ordinary -- `/rewind` asks which checkpoint and then asks what to restore -- so the next one gets
+   * a card of its own; what must not happen is asking again about the one that was already answered.
+   */
+  private answered: DialogReading | null = null;
+  /** How many polls this wait has been up for without the screen showing anything to ask about. */
+  private unreadable = 0;
 
   constructor(options: DialogWatcherOptions) {
     this.options = options;
@@ -155,6 +170,8 @@ export class DialogWatcher {
       if (waitingFor === null) {
         this.carded = false;
         this.lastSeen = null;
+        this.answered = null;
+        this.unreadable = 0;
         if (this.pending) await this.withdraw("Claude closed the question itself");
         return;
       }
@@ -162,12 +179,27 @@ export class DialogWatcher {
       // A hook is what Claude is waiting on, and the card for it is already up: `interactions.ts` owns
       // that answer, and a second card for the same wait would be answering over it.
       if (this.options.interactions.pending) return;
-      const screen = this.options.screen();
-      if (this.options.answeredByStartup(screen)) return;
-      const dialog = readDialog(screen);
+      if (this.options.answeredByStartup(this.options.screen())) return;
+      const dialog = readDialog(this.options.lines());
       if (!dialog) return;
+      if (!dialogIsReadable(dialog)) {
+        // The screen is still the one from before the dialog. A poll or two later it is not, and a wait
+        // whose screen never says anything is carded anyway, on the text it does have.
+        this.unreadable += 1;
+        if (this.unreadable < DIALOG_READ_ATTEMPTS) return;
+      }
+      // The one just answered, still up: either the answer did not take or Claude has not moved on yet.
+      // Either way it is not a new question, and asking about it again is how a loop would start.
+      if (sameDialog(dialog, this.answered)) return;
       this.lastSeen = dialog;
-      void this.raise(waitingFor, dialog);
+      void this.raise(waitingFor, dialog).catch((error) => {
+        // Asking is the only thing here that reaches outside this process, and a client that cannot be
+        // asked is not a reason to go on asking every poll. The question stays up and the submit path
+        // still closes it the next time somebody prompts this session.
+        this.pending = null;
+        this.carded = true;
+        writeLog({ level: "warn", message: "Could not ask Paseo about a question Claude has open", sessionId: this.options.sessionId, error: errorMessage(error) });
+      });
     } catch (error) {
       writeLog({ level: "debug", message: "Could not read Claude's dialog state", sessionId: this.options.sessionId, error: errorMessage(error) });
     } finally {
@@ -187,7 +219,7 @@ export class DialogWatcher {
           [DIALOG_INPUT_MARKER]: true,
           waitingFor,
           question: dialog.question,
-          choices: dialog.choices.map((choice) => choice.label),
+          choices: dialog.choices.map((choice) => (choice.detail === "" ? choice.label : `${choice.label} — ${choice.detail}`)),
           // The dialog as drawn, so a card built from a reading that found no rows can still be read.
           terminal: dialog.text,
         },
@@ -201,10 +233,12 @@ export class DialogWatcher {
       message: "Claude opened a question of its own, and Paseo was asked",
       sessionId: this.options.sessionId,
       waitingFor,
+      title: dialog.title,
       question: dialog.question,
       choices: dialog.choices.map((choice) => choice.label),
-      // The whole screen, because the point of this line is the dialogs nobody has parsed yet.
-      screen: dialog.text,
+      // The whole screen rather than the part that was parsed, because the point of this line is the
+      // dialogs nobody has parsed yet: what a reading missed is never inside what it read.
+      screen: this.options.screen(),
     });
     const response = await request.response;
     if (this.pending?.id !== id) return;
@@ -231,13 +265,7 @@ export class DialogWatcher {
     }
     let outcome: "confirmed" | "gone" | "stuck";
     try {
-      outcome = await this.options.answerMenu({
-        onScreen: (screen) => sameDialog(readDialog(screen), dialog),
-        selected: (screen) => choiceSelected(screen, choice.label),
-        keyDelayMs: this.answerKeyMs,
-        timeoutMs: this.answerTimeoutMs,
-        exited: "Claude exited before its question could be answered",
-      });
+      outcome = await this.moveTo(dialog, choice.label);
     } catch (error) {
       writeLog({ level: "warn", message: "Claude stopped before its question could be answered", sessionId: this.options.sessionId, choice: choice.label, error: errorMessage(error) });
       return;
@@ -252,14 +280,56 @@ export class DialogWatcher {
       await this.escape(`could not be moved to "${choice.label}"`);
       return;
     }
+    // Answered, so whatever is on screen next is a new question rather than this one asked twice.
+    this.answered = dialog;
+    this.carded = false;
     const settled = await this.settled();
+    // Claude still waiting is not a failure on its own: answering one of its dialogs routinely opens the
+    // next one, and the next poll raises a card for that. It is only worth the screen when what is up is
+    // the same dialog, which says the answer did not land.
+    const stillThere = !settled && sameDialog(readDialog(this.options.lines()), dialog);
     writeLog({
-      level: settled ? "info" : "warn",
-      message: settled ? "Answered a question Claude had open" : "Answered a question Claude had open, and Claude went on waiting",
+      level: stillThere ? "warn" : "info",
+      message: stillThere
+        ? "Answered a question Claude had open, and Claude went on waiting on the same one"
+        : settled
+          ? "Answered a question Claude had open"
+          : "Answered a question Claude had open, and Claude opened another",
       sessionId: this.options.sessionId,
       choice: choice.label,
-      ...(settled ? {} : { screen: this.options.screen() }),
+      ...(stillThere ? { screen: this.options.screen() } : {}),
     });
+  }
+
+  /**
+   * Puts Claude's own marker on the row and presses Enter.
+   *
+   * Which key to press is read off the screen rather than guessed at: the marker is somewhere in the
+   * list and the row is somewhere in the list, so the direction is whichever way closes the gap. The
+   * startup menus are answered by pressing Down until the marker comes round, and that cannot answer
+   * one of these -- measured on Claude Code v2.1.269, `/rewind` opens with the marker on its last row
+   * and Down there does nothing at all, because the list does not wrap. Pressing towards the row works
+   * whether it wraps or not, and a list that ignores the keys times out and is escaped instead.
+   */
+  private async moveTo(dialog: DialogReading, label: string): Promise<"confirmed" | "gone" | "stuck"> {
+    const deadline = Date.now() + this.answerTimeoutMs;
+    while (Date.now() < deadline) {
+      const now = readDialog(this.options.lines());
+      if (!now || !sameDialog(now, dialog)) return "gone";
+      const target = now.choices.findIndex((choice) => choice.label === label);
+      const selected = now.choices.findIndex((choice) => choice.selected);
+      if (target < 0 || selected < 0) return "stuck";
+      if (selected === target) {
+        // The marker moves before the state behind it does, so the row is read once more on the way out.
+        await delay(this.answerKeyMs);
+        if (!choiceSelected(this.options.lines(), label)) continue;
+        this.options.press("enter");
+        return "confirmed";
+      }
+      this.options.press(selected > target ? "up" : "down");
+      await delay(this.answerKeyMs);
+    }
+    return "stuck";
   }
 
   private async escape(reason: string): Promise<void> {
@@ -306,11 +376,15 @@ export class DialogWatcher {
 export function dialogOptions(dialog: DialogReading): PermissionOption[] {
   return [
     { optionId: DISMISS_OPTION_ID, name: "Dismiss (Esc)", kind: "reject_once" },
-    ...dialog.choices.map((choice, index) => ({
-      optionId: `${CHOICE_OPTION_PREFIX}${index}`,
-      name: choice.label,
-      kind: "reject_once" as const,
-    })),
+    // The index is the row's in the reading rather than in this list, because it is what answering looks
+    // the row up by; a row with nothing on it is no button at all and is left out.
+    ...dialog.choices
+      .map((choice, index) => ({
+        optionId: `${CHOICE_OPTION_PREFIX}${index}`,
+        name: choice.label,
+        kind: "reject_once" as const,
+      }))
+      .filter((option) => option.name !== ""),
   ];
 }
 

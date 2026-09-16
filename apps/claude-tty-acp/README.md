@@ -261,12 +261,20 @@ The nudges it raises between turns — a plugin it suggests for the project, an 
 Nothing outside the adapter's process can reach that PTY, so until this a session that met one was a session every later prompt failed against, with the message lost and the question answered by whatever keys the next prompt sent into it.
 
 So Claude's own state file is polled while the session's process is up, and a wait that is not one of the adapter's own becomes a permission card in Paseo: one option per row read off the screen, plus **Dismiss (Esc)**, and the dialog as drawn carried on the card so a dialog nothing here could parse is still readable and still dismissable.
+
+Reading one takes two things the screen says and nothing else does.
+Claude draws a dialog under a rule that runs the whole width, and the first line under that rule is its title — without it the card is titled after whatever the conversation happened to end with, which is what `/model` produced.
+And it tells a row from a row's own detail by colour: `/rewind` puts a checkpoint's line and the line summarising its changes in the same column, one in the default colour and one in the grey it writes everything secondary in, so the line naming the keys is read for which grey that is and a row written entirely in it is detail rather than a choice.
+Both were measured against Claude Code v2.1.269 driven through those two commands in a PTY, and both fixtures are in the parser's tests.
 Every option is a declining one, because Paseo's automatic permission modes accept an allow option without showing anybody anything, and these are the questions that must never be answered by a machine.
-Answering moves Claude's own marker to the row and presses Enter — the way the trust screen and the resume question are answered — and then reads the state file back, because that is the only proof the question really went.
+Answering moves Claude's own marker to the row and presses Enter, and then reads the state file back, because that is the only proof the question really went.
+Which key to press comes from the screen rather than from a guess: the marker is somewhere in the list and the row is somewhere in the list, so the direction is whichever way closes the gap.
+Pressing Down until the marker comes round — which is how the startup dialogs are answered — cannot answer these, because Claude's lists do not wrap: `/rewind` opens with the marker on its last row, where Down does nothing at all.
 A row the marker will not reach is escaped rather than pressed at, and so is a card answered with an option this session has no row for.
+Answering one of these routinely opens the next — `/rewind` asks which checkpoint and then asks what to restore — so the dialog that follows gets a card of its own, while the one just answered does not get a second card if it is still on screen.
 
 The card is taken back down when the question goes without it: Claude times two of its nudges out after thirty seconds, and a prompt arriving closes whatever is open to get the keyboard back.
-ACP has no way to withdraw a permission request — the agent asks and waits, and only the client ever ends one — so the plugin resolves it on the daemon's side, over the same vendor channel the tool-call mirror uses.
+ACP has no way to withdraw a permission request — the agent asks and waits, and only the client ever ends one — so the plugin answers it on the daemon's side, over the same vendor channel the tool-call mirror uses.
 A question closed to deliver a prompt also puts a notice in the session's timeline naming what was closed, since the answer Claude was waiting for would otherwise simply disappear.
 
 What the adapter answers itself is never carded: the workspace trust screen, the bypass disclaimer and the resume question are all on the startup path, and the watcher only starts once that path is behind it.

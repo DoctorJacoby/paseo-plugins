@@ -10,18 +10,19 @@ import { CARD_WITHDRAWN_METHOD, NOTICE_METHOD, sessionNotices } from "./session-
 const NATIVE_SESSION_ID = "native";
 
 /**
- * Both halves of this are about what the bridge does with what it is handed, so the test drives the
- * real `runAcpProvider` with an ACP agent in front of it rather than faking the connection: a notice is
- * a vendor update the bridge turns into an event, and a withdrawal is an event the bridge has no route
- * for at all and the wrapper injects.
+ * Both halves of this are about what the bridge does with what it is handed, so the test drives the real
+ * `runAcpProvider` with an ACP agent in front of it rather than faking the connection: a notice is a
+ * vendor update the bridge turns into an event, and a withdrawal is the answer the bridge has no other
+ * way to be given.
  */
 test("turns the adapter's notices into timeline notifications, and takes back a card it withdraws", async (t) => {
   const events: ProviderEvent[] = [];
+  const answers: Array<{ id: string | number | null; result: unknown }> = [];
   const notices = sessionNotices();
   const connection = await runAcpProvider({
     id: "claude-tty-under-test",
     label: "Claude TTY",
-    connector: () => fakeAgent(),
+    connector: () => fakeAgent(answers),
     transformers: [notices.transformer],
   })
     .connect({ versions: [1], capabilities: ["prompt.message", "permission"] })
@@ -52,14 +53,39 @@ test("turns the adapter's notices into timeline notifications, and takes back a 
     description: "The question was closed unanswered.",
   });
 
-  // The card the adapter raised and then took back. ACP has no way to withdraw a permission request,
-  // so what says so on the daemon's side is the same event an answered one ends with.
+  // The card the adapter raised and then took back. ACP cannot withdraw a permission request, so the
+  // wrapper answers it instead, and the bridge ends it exactly as it ends one a person answered.
+  await settled(events, "session.permission_resolved");
   const permission = events.find((event) => event.type === "session.permission");
   const resolved = events.find((event) => event.type === "session.permission_resolved");
   assert.equal(permission?.type === "session.permission" ? permission.request.id : null, "permission:dialog-1");
   assert.equal(resolved?.type === "session.permission_resolved" ? resolved.permissionId : null, "permission:dialog-1");
-  // And it comes after the request it withdraws, rather than racing it.
   assert.ok(events.indexOf(permission!) < events.indexOf(resolved!));
+  // The agent's own request is answered, which is what takes the card out of the bridge's pending map.
+  assert.deepEqual(
+    answers.map((answer) => answer.id),
+    ["permission-1"],
+  );
+  assert.deepEqual(answers[0]!.result, { outcome: { outcome: "selected", optionId: "dialog-dismiss" } });
+
+  // Withdraw, then raise another: only the new one is still pending, and answering it ends that one and
+  // nothing else. Before this the withdrawn card was still in the bridge's map and came back on screen
+  // as pending the next time a card was raised.
+  await settled(events, "session.permission", 2);
+  await connection.send({ type: "session.permission", sessionId: "session", permissionId: "permission:dialog-2", response: { behavior: "deny" } });
+  await settled(events, "session.permission_resolved", 2);
+  for (let attempt = 0; attempt < 200 && answers.length < 2; attempt += 1) await delay(10);
+  assert.deepEqual(
+    events.filter((event) => event.type === "session.permission_resolved").map((event) => (event.type === "session.permission_resolved" ? event.permissionId : "")),
+    ["permission:dialog-1", "permission:dialog-2"],
+  );
+  assert.deepEqual(
+    answers.map((answer) => answer.id),
+    ["permission-1", "permission-2"],
+  );
+  // Answering a card that is no longer open is what the bridge calls the session failing, so nothing
+  // here answers one twice: a session that had fallen over would be showing that instead.
+  assert.ok(!events.some((event) => event.type === "session.runtime_failed"));
 
   // A notice missing the parts Paseo needs is dropped rather than half-emitted.
   assert.equal(events.filter((event) => event.type === "session.notice").length, 1);
@@ -84,7 +110,9 @@ test("gives a card standing for one of Claude's dialogs the dialog to show", () 
     ],
   });
 
-  assert.equal(card?.title, "Claude Code can use the Playwright plugin for this project.");
+  // The title stays the one the adapter read off the dialog; the description is what it said under it.
+  assert.equal(card?.title, "Add the Playwright plugin?");
+  assert.ok(card?.description?.startsWith("Claude Code can use the Playwright plugin for this project."));
   // The dialog as drawn, because the reading that produced the buttons is best-effort and the text is
   // what makes a dialog nothing here could parse answerable by a person.
   assert.ok(card?.description?.includes("1. Yes, add it"));
@@ -98,19 +126,20 @@ test("gives a card standing for one of Claude's dialogs the dialog to show", () 
   assert.equal(dialogPermission({ id: "permission:1", name: "Bash", kind: "tool", title: "Bash", input: { command: "ls" } }), null);
 });
 
-async function settled(events: ProviderEvent[], type: ProviderEvent["type"]): Promise<void> {
+async function settled(events: ProviderEvent[], type: ProviderEvent["type"], count = 1): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
-    if (events.some((event) => event.type === type)) return;
+    if (events.filter((event) => event.type === type).length >= count) return;
     await delay(10);
   }
   throw new Error(`No ${type} event arrived: ${events.map((event) => event.type).join(", ")}`);
 }
 
 /**
- * An ACP agent that raises a permission, sends the two vendor notifications this is about, and leaves
- * the permission unanswered — which is the state a withdrawn card is in.
+ * An ACP agent that raises a card, withdraws it, raises a second one, and keeps whatever it is answered
+ * — a withdrawn card is one the agent stopped waiting for, and what the bridge does with the request
+ * behind it is the whole of this.
  */
-function fakeAgent(): AcpStream {
+function fakeAgent(answers: Array<{ id: string | number | null; result: unknown }>): AcpStream {
   let send: (message: AcpStreamMessage) => void = () => undefined;
   const readable = new ReadableStream<AcpStreamMessage>({
     start(controller) {
@@ -119,7 +148,10 @@ function fakeAgent(): AcpStream {
   });
   const writable = new WritableStream<AcpStreamMessage>({
     write(message) {
-      if (!("method" in message)) return;
+      if (!("method" in message)) {
+        if ("result" in message) answers.push({ id: message.id, result: message.result });
+        return;
+      }
       if (message.method === "initialize") {
         send({ jsonrpc: "2.0", id: idOf(message), result: { protocolVersion: 1, agentCapabilities: { promptCapabilities: { image: true, embeddedContext: true } } } });
         return;
@@ -155,6 +187,17 @@ function fakeAgent(): AcpStream {
         // A notice with nothing to show carries no title, and is dropped rather than drawn empty.
         send({ jsonrpc: "2.0", method: NOTICE_METHOD, params: { sessionId: NATIVE_SESSION_ID, notice: { id: "no-title" } } });
         send({ jsonrpc: "2.0", method: CARD_WITHDRAWN_METHOD, params: { sessionId: NATIVE_SESSION_ID, toolCallId: "dialog-1" } });
+        // The next question Claude opens, raised after the first card was taken back.
+        send({
+          jsonrpc: "2.0",
+          id: "permission-2",
+          method: "session/request_permission",
+          params: {
+            sessionId: NATIVE_SESSION_ID,
+            toolCall: { toolCallId: "dialog-2", title: "Rewind", kind: "other", status: "pending", rawInput: { claudeDialog: true } },
+            options: [{ optionId: "dialog-dismiss", name: "Dismiss (Esc)", kind: "reject_once" }],
+          },
+        });
         return;
       }
       if ("id" in message && message.id !== null && message.id !== undefined) {
