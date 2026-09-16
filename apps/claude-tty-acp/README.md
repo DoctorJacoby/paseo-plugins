@@ -254,6 +254,25 @@ The adapter runs a single loopback HTTP server whose URL carries a per-process s
 `PermissionRequest` becomes an ACP permission request offering Allow once, Claude's own permission suggestions as always-allow options, and Deny, and the answer becomes the hook's decision — unless [Auto Accept](#auto-accept) is on, which answers Allow once without asking.
 `PreToolUse` intercepts two tools before they run: `AskUserQuestion` renders as one permission card for the whole call, and `ExitPlanMode` renders as a plan approval.
 
+### Claude's own dialogs become cards
+
+Not everything Claude asks comes through a hook.
+The nudges it raises between turns — a plugin it suggests for the project, an LSP it noticed, an effort level it would rather use, a setup question about what it may read — are drawn in the terminal, in the input box's place, and Claude then holds the keyboard until one of them is answered.
+Nothing outside the adapter's process can reach that PTY, so until this a session that met one was a session every later prompt failed against, with the message lost and the question answered by whatever keys the next prompt sent into it.
+
+So Claude's own state file is polled while the session's process is up, and a wait that is not one of the adapter's own becomes a permission card in Paseo: one option per row read off the screen, plus **Dismiss (Esc)**, and the dialog as drawn carried on the card so a dialog nothing here could parse is still readable and still dismissable.
+Every option is a declining one, because Paseo's automatic permission modes accept an allow option without showing anybody anything, and these are the questions that must never be answered by a machine.
+Answering moves Claude's own marker to the row and presses Enter — the way the trust screen and the resume question are answered — and then reads the state file back, because that is the only proof the question really went.
+A row the marker will not reach is escaped rather than pressed at, and so is a card answered with an option this session has no row for.
+
+The card is taken back down when the question goes without it: Claude times two of its nudges out after thirty seconds, and a prompt arriving closes whatever is open to get the keyboard back.
+ACP has no way to withdraw a permission request — the agent asks and waits, and only the client ever ends one — so the plugin resolves it on the daemon's side, over the same vendor channel the tool-call mirror uses.
+A question closed to deliver a prompt also puts a notice in the session's timeline naming what was closed, since the answer Claude was waiting for would otherwise simply disappear.
+
+What the adapter answers itself is never carded: the workspace trust screen, the bypass disclaimer and the resume question are all on the startup path, and the watcher only starts once that path is behind it.
+Neither is a wait a hook is already asking about — a permission, an `AskUserQuestion`, a plan — because the card for that is already on screen.
+Every transition into a dialog is logged with the screen it was on, because the list of these grows with every Claude release and the log is how the next one gets read properly.
+
 ### State on disk
 
 The state directory holds one JSON file per session, mapping the Paseo session ID to Claude's own session ID, cwd, model, mode and effort, plus a lock file naming the process that has the session open.

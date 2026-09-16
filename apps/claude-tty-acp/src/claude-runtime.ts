@@ -6,6 +6,7 @@ import type { AgentSideConnection, ContentBlock, PromptResponse } from "@agentcl
 import * as nodePty from "node-pty";
 import { type ContextWindow, contextWindow, formatTokens } from "./context-window.ts";
 import { createDeferred, type Deferred } from "./deferred.ts";
+import { DialogWatcher } from "./dialog-cards.ts";
 import { type HookPayload, type HookRegistration, type HookResponse, HookServer } from "./hook-server.ts";
 import { InteractionBridge } from "./interactions.ts";
 import { writeLog } from "./log.ts";
@@ -144,6 +145,10 @@ export type RuntimeDependencies = {
   latePasteMs?: number;
   dialogDismissMs?: number;
   clearInputKeyMs?: number;
+  dialogPollMs?: number;
+  dialogAnswerKeyMs?: number;
+  dialogAnswerTimeoutMs?: number;
+  dialogSettleMs?: number;
   transcriptPollIntervalMs?: number;
   workspaceTrustKeyDelayMs?: number;
   workspaceTrustSelectionTimeoutMs?: number;
@@ -212,6 +217,8 @@ export class ClaudeRuntime {
   private effort: string;
   private readonly onClaudeSessionChange: ((claudeSessionId: string) => Promise<void>) | undefined;
   private readonly interactions: InteractionBridge;
+  /** Claude's own questions, as cards; it watches only while the process it is about is up. */
+  private readonly dialogs: DialogWatcher;
   private readonly translator: TranscriptTranslator;
   private transcript: TranscriptWatcher;
   private readonly screen = new TerminalScreen();
@@ -257,6 +264,20 @@ export class ClaudeRuntime {
     this.effort = dependencies.effort ?? INHERIT_EFFORT_ID;
     this.onClaudeSessionChange = dependencies.onClaudeSessionChange;
     this.interactions = new InteractionBridge(sessionId, cwd, connection, dependencies.autoAccept);
+    this.dialogs = new DialogWatcher({
+      sessionId,
+      connection,
+      interactions: this.interactions,
+      waitingFor: () => claudeIsWaitingFor(this.pty?.pid, this.claudeConfigDir),
+      screen: () => this.screen.snapshot(),
+      escape: () => this.pty?.write(ESCAPE),
+      answerMenu: (menu) => this.answerStartupMenu(menu),
+      answeredByStartup: (screen) => isWorkspaceTrustScreen(screen) || isBypassPermissionsScreen(screen) || isStaleResumeScreen(screen),
+      ...(dependencies.dialogPollMs === undefined ? {} : { pollIntervalMs: dependencies.dialogPollMs }),
+      ...(dependencies.dialogAnswerKeyMs === undefined ? {} : { answerKeyMs: dependencies.dialogAnswerKeyMs }),
+      ...(dependencies.dialogAnswerTimeoutMs === undefined ? {} : { answerTimeoutMs: dependencies.dialogAnswerTimeoutMs }),
+      ...(dependencies.dialogSettleMs === undefined ? {} : { settleMs: dependencies.dialogSettleMs }),
+    });
     this.spawnPty = dependencies.spawnPty ?? nodePty.spawn;
     this.startupTimeoutMs = dependencies.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
     this.readinessTimeoutMs = dependencies.readinessTimeoutMs ?? STARTUP_TIMEOUT_MS;
@@ -401,6 +422,7 @@ export class ClaudeRuntime {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.dialogs.stop();
     if (this.cancelTimer) clearTimeout(this.cancelTimer);
     this.cancelTimer = null;
     this.ready?.reject(new Error(`Session ${this.sessionId} closed before Claude became ready`));
@@ -477,12 +499,16 @@ export class ClaudeRuntime {
       this.trustPrompt = null;
     }
     await this.waitForTerminalReady();
+    // Only now: everything above is a dialog the adapter answers itself, and a card for one of those
+    // would ask Paseo about a question that is already being answered.
+    this.dialogs.start();
     await this.transcript.start();
     this.resumeNextLaunch = true;
     writeLog({ level: "info", message: "Started interactive Claude session", sessionId: this.sessionId, claudePid: this.pty?.pid, cwd: this.cwd });
   }
 
   private async failedStartup(message: string): Promise<never> {
+    this.dialogs.stop();
     // The message carries the terminal snapshot, and it has only ever travelled to Paseo as an error.
     // A handshake that failed is the thing nobody can reconstruct afterwards, so the log keeps it too.
     writeLog({ level: "error", message, sessionId: this.sessionId });
@@ -562,6 +588,7 @@ export class ClaudeRuntime {
   private handleExit(pty: PtyProcess, exitCode: number, signal?: number): void {
     if (this.closed) return;
     const current = this.pty === pty;
+    if (current) this.dialogs.stop();
     if (this.intentionalExit) {
       if (current) this.pty = null;
       this.intentionalExit.resolve();
@@ -813,6 +840,7 @@ export class ClaudeRuntime {
   private async stopForRestart(): Promise<void> {
     const pty = this.pty;
     if (!pty) return;
+    this.dialogs.stop();
     this.intentionalExit = createDeferred<void>();
     pty.write(CONTROL_D);
     await Promise.race([this.intentionalExit.promise, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
@@ -947,6 +975,17 @@ export class ClaudeRuntime {
       if (!inputBoxVisible(this.screen.snapshot())) return;
       pasted = await this.screenSettles((screen) => inputBoxHolds(screen, echo), this.latePasteMs);
       if (!pasted) {
+        // An echo that never came is the shape a question opening behind the paste has: the paste went
+        // into the question instead of the box, so there was never an echo to wait for. Asked here
+        // rather than only before the key, because the wait above is two seconds long and a question
+        // Claude opened during it would otherwise fail a prompt this can still deliver.
+        const keyboard = await this.takeTheKeyboardBack(activityBefore);
+        if (keyboard === "delivered") return;
+        if (keyboard === "dismissed") {
+          await paste();
+          pasted = await this.screenSettles((screen) => inputBoxHolds(screen, echo), PASTE_ECHO_MS);
+          continue;
+        }
         if (this.submissionMovedOn(activityBefore)) return;
         throw new Error(`Claude never took the prompt for session ${this.sessionId}: it did not appear in Claude's input box.`);
       }
@@ -984,6 +1023,9 @@ export class ClaudeRuntime {
         await delay(STARTUP_POLL_INTERVAL_MS);
         if ((await claudeIsWaitingFor(this.pty?.pid, this.claudeConfigDir)) === null) {
           writeLog({ level: "warn", message: "Closed something Claude had open, to get the keyboard back for a prompt", sessionId: this.sessionId, waitingFor });
+          // The card for that question stands for an answer nobody can give now, and the question went
+          // unanswered to make room for this message, which is worth a line in the session's timeline.
+          await this.dialogs.dismissedForPrompt(waitingFor);
           return "dismissed";
         }
       } while (Date.now() < deadline);

@@ -177,6 +177,22 @@ There is no plugin timeline renderer for any of this, and there should not be on
 A plan is `kind: "plan"` with `metadata.planText`, which is what the host's plan card reads first, and Paseo's own Implement and Reject actions.
 There is no `implement_resume` beside them: that intent means returning to the mode planning interrupted, and the permission mode is an argument the adapter launches Claude with, so a session cannot change it.
 
+## A card cannot be taken back, so the plugin ends it on the daemon's side
+
+ACP permissions only ever end at the client: the agent sends `session/request_permission` and waits, nothing in the protocol withdraws one, and the bridge's own `permissions` map is cleared only when the transport closes.
+That is fine for everything a hook asks, because Claude is blocked on the hook until somebody answers.
+It is not fine for the cards the adapter raises for Claude's *own* terminal dialogs: Claude closes two of its nudges by itself after thirty seconds, and a prompt arriving closes whatever is open to get the keyboard back, so the card would be left standing for a question nobody is asking and nobody can make go away.
+
+`server/session-notices.ts` ends it where it can be ended — the daemon — by emitting the same `session.permission_resolved` the bridge emits for an answered one, with the id it would have used (`permission:<toolCallId>`).
+The bridge goes on holding its own entry for that id, which is why the adapter never reuses a tool call id for a card.
+That event is not an `AcpVendorUpdate` — the four it has are commands, config, timeline and notice — so it cannot come from a transformer, and the wrapper injects it into the connection's event stream instead, the way `server/tool-details.ts` rewrites items on their way out.
+The transformer and the wrapper are built by one factory because the transformer is what hears the adapter's notification and the wrapper is the only thing that can emit anything.
+
+It is wrapped innermost of the four, directly around the steer fallback, so what it injects travels out through every wrapper above it — `withPermissionCards` drops its own record of a card on exactly this event.
+
+A notice is the easy half of the same file: `{ type: "notice", notice }` is a vendor update the bridge already turns into `session.notice`, which is a timeline notification rather than a message and sends no push.
+It is how something that happened *to* a session gets said — a question of Claude's dismissed to deliver a prompt — and a notice missing an id or a title is dropped rather than drawn empty.
+
 ## Constraints that are not obvious
 
 The daemon's `PATH` is not your shell's.

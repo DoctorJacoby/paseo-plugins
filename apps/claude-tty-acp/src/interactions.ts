@@ -273,12 +273,33 @@ export class InteractionBridge {
   }
 
   private request(params: { toolCall: ToolCallUpdate; options: PermissionOption[] }): Promise<RequestPermissionResponse> {
+    return this.openRequest(params).response;
+  }
+
+  /**
+   * The same card, with the handle that takes it back down again.
+   *
+   * Everything Claude asks through a hook is answered or it is not, and the hook is what ends it. A
+   * question Claude draws in its own terminal is not like that: it can close while the card for it is
+   * still up -- Claude times some of them out after 30 seconds, and a prompt arriving dismisses any of
+   * them -- and the card then stands for a question nobody is asking. `withdraw` is how the caller
+   * says so. It resolves this side as cancelled the way `cancelPending` does, and only this one rather
+   * than every card at once; telling the client is the caller's, because ACP has no way to say it.
+   */
+  openRequest(params: { toolCall: ToolCallUpdate; options: PermissionOption[] }): {
+    response: Promise<RequestPermissionResponse>;
+    withdraw: () => void;
+  } {
     const cancellation = createDeferred<RequestPermissionResponse>();
     this.pendingRequests.add(cancellation);
-    return Promise.race([
+    const response = Promise.race([
       this.connection.requestPermission({ sessionId: this.sessionId, ...params }),
       cancellation.promise,
     ]).finally(() => this.pendingRequests.delete(cancellation));
+    return {
+      response,
+      withdraw: () => cancellation.resolve({ outcome: { outcome: "cancelled" } }),
+    };
   }
 
   private takePendingTool(name: string, input: Record<string, unknown>): PendingTool | null {

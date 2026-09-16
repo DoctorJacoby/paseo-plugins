@@ -6,6 +6,7 @@ import type {
   ProviderPermissionResponse,
 } from "@getpaseo/plugin/server/provider";
 import { writeCardAnswers } from "./card-answers.ts";
+import { dialogPermission } from "./dialog-cards.ts";
 import { answersByQuestion, planPermission, questionPermission, SUBMIT_OPTION_ID } from "./question-cards.ts";
 
 /** The id `runAcpProvider` gives a permission it raises for a tool call, which is the only handle both sides share. */
@@ -14,7 +15,8 @@ const PERMISSION_ID_PREFIX = "permission:";
 /**
  * Everything the ACP bridge cannot say. It builds every permission as a plain `kind: "tool"` card
  * with one button per ACP option, because ACP has nowhere to put the rest; the two tools that ask a
- * person something have a card of Paseo's own, so their requests are rebuilt on the way out here.
+ * person something have a card of Paseo's own, and a card standing for one of Claude's own terminal
+ * dialogs has the dialog to show, so those requests are rebuilt on the way out here.
  * On the way back the same wrapper takes the answers off the response, which the bridge would
  * otherwise drop, and leaves them where the adapter reads them.
  */
@@ -49,7 +51,7 @@ function rebuild(request: ProviderPermissionRequest, cards: Map<string, Provider
     cards.set(question.id, question);
     return question;
   }
-  return planPermission(request) ?? request;
+  return planPermission(request) ?? dialogPermission(request) ?? request;
 }
 
 /**

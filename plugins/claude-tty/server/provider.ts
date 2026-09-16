@@ -5,6 +5,7 @@ import { PROVIDER_ID, PROVIDER_LABEL } from "../shared/provider.ts";
 import { resolveAdapter } from "./adapter.ts";
 import { adapterCommand, cardAnswersDirectory, defaultStateDirectory } from "./paths.ts";
 import { withPermissionCards } from "./permission-bridge.ts";
+import { sessionNotices } from "./session-notices.ts";
 import { withSteerFallback } from "./steering.ts";
 import { subagentSource } from "./subagents.ts";
 import { withSubagentSessions } from "./subsessions.ts";
@@ -65,22 +66,25 @@ export function claudeTtyProvider(): ProviderRegistration {
       const adapter = await resolveAdapter();
       if (adapter.executable === null) throw new Error(adapter.problem!);
       const details = toolCallDetails();
+      const notices = sessionNotices();
       const connection = await runAcpProvider({
         id: PROVIDER_ID,
         label: PROVIDER_LABEL,
         command: adapterCommand(adapter.executable),
         acpOptions: { waitForInitialCommands: true, initialCommandsTimeoutMs: INITIAL_COMMANDS_TIMEOUT_MS },
-        transformers: [details.transformer],
+        transformers: [details.transformer, notices.transformer],
       }).connect(request);
-      // The steer fallback goes innermost, because it stands in for the bridge. The cards go next, so
-      // the two wrappers outside read tool calls that already say what they were. The subsessions go
-      // above those, so what the daemon is told this connection can do is what the wrapper that emits
-      // the child sessions has already agreed to. The outcomes go outermost, because an item the
-      // daemon will not accept has to be repaired wherever in the stack it was made.
+      // The steer fallback goes innermost, because it stands in for the bridge. The notices go next:
+      // what that wrapper injects -- a card the adapter has taken back -- has to travel out through
+      // every wrapper above, the permission cards included, since each keeps state about the events it
+      // sees. The cards go after, so the two wrappers outside read tool calls that already say what they
+      // were. The subsessions go above those, so what the daemon is told this connection can do is what
+      // the wrapper that emits the child sessions has already agreed to. The outcomes go outermost,
+      // because an item the daemon will not accept has to be repaired wherever in the stack it was made.
       return withCancelledToolCalls(
         withSubagentSessions(
           withPermissionCards(
-            details.wrap(withSteerFallback(connection, request.capabilities)),
+            details.wrap(notices.wrap(withSteerFallback(connection, request.capabilities))),
             cardAnswersDirectory(defaultStateDirectory()),
           ),
           subagentSource(),

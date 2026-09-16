@@ -1127,6 +1127,164 @@ test("re-pastes a prompt the question behind it swallowed, instead of sending an
   }
 });
 
+test("re-pastes a prompt whose echo never came because a question opened behind it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-late-echo-test-"));
+  const configDirectory = path.join(root, "claude");
+  const runtimeRoot = path.join(root, "runtime");
+  const claudePid = 6700;
+  const statePath = await writeClaudeSessionState(configDirectory, claudePid, { status: "idle" });
+  const vendor: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const connection = {
+    sessionUpdate: async () => undefined,
+    extNotification: async (method: string, params: Record<string, unknown>) => {
+      vendor.push({ method, params });
+    },
+  } as unknown as AgentSideConnection;
+  let agent!: ClaudeTtyAgent;
+  let pty!: FakePty;
+  let swallowed = false;
+  let dialogUp = false;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    // The race the state file could not see in time: nothing had the keyboard when the prompt was
+    // cleared and pasted, and the question opened during the paste -- so there is no echo of the prompt
+    // coming, ever, and the two seconds spent waiting for one are two seconds the question was up.
+    pty = new FakePty(claudePid, (text) => {
+      if (text.startsWith("\u001b[200~")) {
+        if (!swallowed || dialogUp) return;
+        pty.emitData("\u001b[2J\u001b[H\u276f commit this\r\n");
+        return;
+      }
+      if (text === "\r" && !swallowed) {
+        swallowed = true;
+        dialogUp = true;
+        writeFileSync(statePath, JSON.stringify({ pid: claudePid, status: "waiting", waitingFor: "dialog open" }));
+        pty.emitData(AUTO_MODE_SETUP_SCREEN);
+        return;
+      }
+      if (text === ESCAPE_KEY && dialogUp) {
+        dialogUp = false;
+        writeFileSync(statePath, JSON.stringify({ pid: claudePid, status: "idle" }));
+        pty.emitData("\u001b[2J\u001b[H\u276f\r\n  \u23f8 auto mode on\r\n");
+        return;
+      }
+      if (text === "\r") pty.emitData("\u001b[2J\u001b[H\u276f\r\n");
+    });
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    setImmediate(() => pty.emitData("\u001b[2J\u001b[H\u276f\r\n  \u23f8 auto mode on\r\n"));
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(connection, {
+    spawnPty,
+    runtimeRoot,
+    stateDirectory: path.join(runtimeRoot, "state"),
+    claudeConfigDir: configDirectory,
+    startupTimeoutMs: 500,
+    readinessTimeoutMs: 0,
+    submitDelayMs: 0,
+    contextRefreshTimeoutMs: 0,
+    latePasteMs: 50,
+    // Long enough that the poll never gets there first: this is the submit path's own check.
+    dialogPollMs: 10_000,
+  });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/late-echo", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "commit this" }] });
+    await waitFor(() => pty !== undefined && pty.writes.length === 5, 4_000);
+    // The first submit key went into a box with nothing in it, the wait for a late echo found the
+    // question instead, and the prompt was pasted again once the keyboard was back -- rather than the
+    // turn failing with a message Claude never saw.
+    assert.deepEqual(keySequence(pty.keystrokes), [
+      "clear",
+      "\u001b[200~commit this \u001b[201~",
+      "\r",
+      ESCAPE_KEY,
+      "clear",
+      "\u001b[200~commit this \u001b[201~",
+      "\r",
+    ]);
+    // And the question that was closed to make room is said in the timeline rather than lost.
+    const notice = vendor.find((update) => update.method === "_claude_tty/notice");
+    assert.ok(String((notice?.params.notice as { title: string } | undefined)?.title).includes("Dismissed"));
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+  } finally {
+    await agent.close();
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("raises a card for a question Claude opens on its own, and closes it with Escape", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-dialog-card-test-"));
+  const configDirectory = path.join(root, "claude");
+  const runtimeRoot = path.join(root, "runtime");
+  const claudePid = 6800;
+  const statePath = await writeClaudeSessionState(configDirectory, claudePid, { status: "idle" });
+  const permissionRequests: RequestPermissionRequest[] = [];
+  const connection = {
+    sessionUpdate: async () => undefined,
+    extNotification: async () => undefined,
+    requestPermission: async (request: RequestPermissionRequest): Promise<RequestPermissionResponse> => {
+      permissionRequests.push(request);
+      return { outcome: { outcome: "selected", optionId: "dialog-dismiss" } };
+    },
+  } as unknown as AgentSideConnection;
+  let agent!: ClaudeTtyAgent;
+  let pty!: FakePty;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    pty = new FakePty(claudePid, (text) => {
+      if (text.startsWith("\u001b[200~")) pty.emitData("\u001b[2J\u001b[H\u276f commit this\r\n");
+      if (text === "\r") pty.emitData("\u001b[2J\u001b[H\u276f\r\n");
+      if (text === ESCAPE_KEY) {
+        writeFileSync(statePath, JSON.stringify({ pid: claudePid, status: "idle" }));
+        pty.emitData("\u001b[2J\u001b[H\u276f\r\n  \u23f8 auto mode on\r\n");
+      }
+    });
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    setImmediate(() => pty.emitData("\u001b[2J\u001b[H\u276f\r\n  \u23f8 auto mode on\r\n"));
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(connection, {
+    spawnPty,
+    runtimeRoot,
+    stateDirectory: path.join(runtimeRoot, "state"),
+    claudeConfigDir: configDirectory,
+    startupTimeoutMs: 500,
+    readinessTimeoutMs: 0,
+    submitDelayMs: 0,
+    contextRefreshTimeoutMs: 0,
+    dialogPollMs: 10,
+    dialogSettleMs: 200,
+  });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/dialog-card", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "commit this" }] });
+    await waitFor(() => pty !== undefined && pty.writes.length === 2);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+
+    // Claude puts a nudge up the moment the turn ends, which is exactly when it does not report them
+    // while one is running. Nothing else in this process would ever see it.
+    pty.emitData(AUTO_MODE_SETUP_SCREEN);
+    writeFileSync(statePath, JSON.stringify({ pid: claudePid, status: "waiting", waitingFor: "dialog open" }));
+    await waitFor(() => permissionRequests.length === 1, 4_000);
+    const request = permissionRequests[0]!;
+    assert.equal(request.toolCall.title, "Claude Code reads this project, your recent Claude sessions, and optionally your shell history and other repositories.");
+    assert.deepEqual(
+      request.options.map((option) => `${option.optionId}:${option.kind}`),
+      ["dialog-dismiss:reject_once", "dialog-choice-0:reject_once", "dialog-choice-1:reject_once"],
+    );
+    // Dismissed in Paseo, so Escape goes in and Claude stops saying it is waiting.
+    await waitFor(() => pty.keystrokes.at(-1) === ESCAPE_KEY, 4_000);
+  } finally {
+    await agent.close();
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("sends the prompt as usual when Claude says nothing else has the keyboard", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-no-dialog-test-"));
   const configDirectory = path.join(root, "claude");
