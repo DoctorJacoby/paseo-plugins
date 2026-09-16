@@ -278,6 +278,26 @@ test("escapes the question when the card is dismissed, and when the row cannot b
   stuck.setWaitingFor(null);
 });
 
+test("takes the card down in Paseo too when the session lets go of it at a turn boundary", async (t) => {
+  const orphaned = harness();
+  t.after(() => orphaned.watcher.stop());
+  orphaned.watcher.start();
+  orphaned.setScreen(DIALOG_SCREEN);
+  orphaned.setWaitingFor("dialog open");
+  await waitFor(() => orphaned.permissions.length === 1);
+  const card = orphaned.permissions[0]!.toolCall.toolCallId;
+
+  // A prompt arrives, which is what `beginTurn` does to every card this side is waiting on. Nothing
+  // else will ever end this one: the adapter has stopped waiting, and Paseo is still showing it.
+  orphaned.interactions.cancelPending();
+  await waitFor(() => orphaned.vendor.some((update) => update.method === CARD_WITHDRAWN_METHOD));
+  assert.equal(orphaned.vendor.find((update) => update.method === CARD_WITHDRAWN_METHOD)!.params.toolCallId, card);
+
+  // And because the question is still up, it is asked about again rather than left unanswerable.
+  await waitFor(() => orphaned.permissions.length === 2);
+  assert.notEqual(orphaned.permissions[1]!.toolCall.toolCallId, card);
+});
+
 test("takes the card down when the question closes by itself", async (t) => {
   const test4 = harness();
   t.after(() => test4.watcher.stop());

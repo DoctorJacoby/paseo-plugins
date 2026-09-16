@@ -190,6 +190,25 @@ The deny lands on the first declining option, which on every card the adapter wi
 
 Answering a card that is *not* pending is not harmless, which is why the cards still open are tracked in that wrapper from the bridge's own `session.permission` and `session.permission_resolved` events: `respondToPermission` throws `Unknown ACP permission`, and `send` never rejects — `emitOperationFailure` turns it into `session.runtime_failed` for the session, which the daemon reads as the whole session having fallen over.
 A withdrawal and a person can still answer the same card in the same instant, so a `session.runtime_failed` carrying that message is dropped on the way out; nothing else produces one, and it means a card was answered twice rather than that anything failed.
+
+**A card left open does not merely go stale — it comes back.**
+Two things in `@getpaseo/server` 0.8.0's `agent-manager.js` make that so, and together they are why the withdrawal has to reach the provider rather than only the screen.
+`respondToPermission` refreshes the agent after every answered card, and `refreshSessionState` rebuilds `agent.pendingPermissions` wholesale from `session.getPendingPermissions()` — the plugin session's own map, which only `session.permission_resolved` ever empties.
+And `cancelAgentRun`, which runs whenever Paseo interrupts a turn to replace it, calls `resolvePendingPermissionsForAgent`: that clears the *agent's* copy and tells the provider nothing at all.
+So an interrupted turn hides a card, and the next card anybody answers brings it back — on top of whatever is on screen by then, answering a question that closed minutes ago.
+A session was watched doing exactly that on 2026-09-16, resurrecting a `/model` card a prompt had closed a minute earlier.
+
+That is what `server/daemon-permissions.test.ts` drives, against the daemon's own `PluginAgentClientRegistry` rather than an account of it, with the canary beside it that asserts the resurrection while Paseo still behaves this way.
+The daemon is not a dependency here — it is what installs this plugin, and making it one would put it in front of every `pnpm install --frozen-lockfile` an install runs — so the test resolves `@getpaseo/server` if a copy is to hand and skips with instructions if not: `PASEO_SERVER_DIST=<path to an installed @getpaseo/server> pnpm test`.
+
+The wrapper also ends the dialog card a session already had open when the adapter raises the next one.
+A session holds one of Claude's questions at a time, so a card for a new one says the old one is over, whatever became of the withdrawal that should have said so — the backstop that makes the resurrection impossible rather than merely unlikely.
+The transformer and the wrapper are built by one factory because the transformer is what hears the adapter's notification and the wrapper is the only thing that can reach the connection.
+
+The model a session is on is the third thing in that file, and the third thing ACP has no word for: it carries a session's mode home over `current_mode_update` and nothing else about its configuration, so a model Claude swapped for itself — a message its safeguards flagged, retried on a fallback — has no way back to the picker.
+The bridge's `config` vendor update is the route, but it replaces the whole `ProviderConfigState` rather than patching one field, and a transformer is handed no state at all.
+So the wrapper keeps the last configuration the bridge published per session and the change is that snapshot with the model moved; a model the session's own catalogue does not list is ignored, since a picker set to an option it does not have is worse than a picker one switch out of date.
+It is a reading rather than a decision — the adapter's launch flag is untouched, so restarting the session puts the model back to the one that was chosen.
 The transformer and the wrapper are built by one factory because the transformer is what hears the adapter's notification and the wrapper is the only thing that can reach the connection.
 
 The model a session is on is the third thing in that file, and the third thing ACP has no word for: it carries a session's mode home over `current_mode_update` and nothing else about its configuration, so a model Claude swapped for itself — a message its safeguards flagged, retried on a fallback — has no way back to the picker.

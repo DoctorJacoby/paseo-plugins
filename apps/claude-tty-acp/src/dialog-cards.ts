@@ -136,7 +136,7 @@ export class DialogWatcher {
     const pending = this.pending;
     this.pending = null;
     pending?.withdraw();
-    if (pending) void sendCardWithdrawn(this.options.connection, this.options.sessionId, pending.id);
+    if (pending) void this.withdrawCard(pending.id, "the session stopped");
   }
 
   /**
@@ -170,8 +170,11 @@ export class DialogWatcher {
       if (waitingFor === null) {
         this.carded = false;
         this.lastSeen = null;
-        this.answered = null;
         this.unreadable = 0;
+        // The question that was answered is forgotten once it is off the screen, rather than the moment
+        // Claude stops waiting: answering one of these opens the next, and Claude writes the state file
+        // ahead of the redraw, so for a poll or two the answered dialog is still what is drawn.
+        if (this.answered && !sameDialog(readDialog(this.options.lines()), this.answered)) this.answered = null;
         if (this.pending) await this.withdraw("Claude closed the question itself");
         return;
       }
@@ -245,9 +248,16 @@ export class DialogWatcher {
     this.pending = null;
     if (response.outcome.outcome === "cancelled") {
       // Not this class's doing -- a turn ended, or a prompt started, and `cancelPending` let go of every
-      // card at once. The question is still up, so the next tick asks again rather than leaving a
-      // session holding a dialog nobody can see.
+      // card this side was waiting on. Paseo is still showing it, and nothing else will ever end it, so
+      // it is taken down there too; the next tick asks again while the question is still up.
+      //
+      // Left standing it is worse than a card nobody can answer. The daemon drops its own record of the
+      // pending cards when it interrupts a turn -- `resolvePendingPermissionsForAgent`, which tells the
+      // provider nothing -- and rebuilds that record from the provider's own list the next time anybody
+      // answers anything. A card the provider still holds then comes back from the dead, on top of
+      // whatever is on screen at the time.
       this.carded = false;
+      await this.withdrawCard(id, "the session let go of every card it was waiting on");
       return;
     }
     await this.answer(dialog, response.outcome.optionId);
@@ -271,7 +281,19 @@ export class DialogWatcher {
       return;
     }
     if (outcome === "gone") {
-      writeLog({ level: "warn", message: "Claude's question was answered before the card's answer reached it", sessionId: this.options.sessionId, choice: choice.label });
+      // Nothing is pressed into whatever is there instead: an answer to a question that has moved on is
+      // a no-op, and what it was answering against goes in the log, because this is the one outcome
+      // here that cannot be read off the screen afterwards.
+      const now = readDialog(this.options.lines());
+      writeLog({
+        level: "warn",
+        message: "Claude's question was answered after it stopped being the one on screen",
+        sessionId: this.options.sessionId,
+        choice: choice.label,
+        carded: { title: dialog.title, question: dialog.question, choices: dialog.choices.map((entry) => entry.label) },
+        onScreen: now === null ? null : { title: now.title, question: now.question, choices: now.choices.map((entry) => entry.label) },
+        screen: this.options.screen(),
+      });
       return;
     }
     if (outcome === "stuck") {
@@ -359,8 +381,13 @@ export class DialogWatcher {
     this.pending = null;
     if (!pending) return;
     pending.withdraw();
-    writeLog({ level: "info", message: "Took back the card for a question Claude was asking", sessionId: this.options.sessionId, reason });
-    await sendCardWithdrawn(this.options.connection, this.options.sessionId, pending.id);
+    await this.withdrawCard(pending.id, reason);
+  }
+
+  /** Says a card is over, whether this side was still waiting on it or had already been let go of. */
+  private async withdrawCard(id: string, reason: string): Promise<void> {
+    writeLog({ level: "info", message: "Took back the card for a question Claude was asking", sessionId: this.options.sessionId, reason, card: id });
+    await sendCardWithdrawn(this.options.connection, this.options.sessionId, id);
   }
 }
 

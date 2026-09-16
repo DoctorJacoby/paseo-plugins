@@ -51,7 +51,7 @@ async function send(connection: AgentSideConnection, sessionId: string, method: 
     await connection.extNotification(method, params);
   } catch (error) {
     writeLog({
-      level: "debug",
+      level: "warn",
       message: "Could not send a vendor update to the client",
       sessionId,
       method,

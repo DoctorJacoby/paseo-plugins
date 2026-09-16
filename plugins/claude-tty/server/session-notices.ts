@@ -1,5 +1,6 @@
 import type { AcpTransformer, AcpVendorUpdate } from "@getpaseo/plugin/server/acp";
 import type { ProviderConnection, ProviderEvent, ProviderNotice } from "@getpaseo/plugin/server/provider";
+import { isDialogPermission } from "./dialog-cards.ts";
 
 /** Mirrors the adapter's own `vendor-updates.ts`; the plugin runs in the daemon and cannot import it. */
 export const NOTICE_METHOD = "_claude_tty/notice";
@@ -50,7 +51,7 @@ const UNKNOWN_PERMISSION = /Unknown ACP permission/i;
  */
 export function sessionNotices(): { transformer: AcpTransformer; wrap(connection: ProviderConnection): ProviderConnection } {
   /** The cards the daemon still has open, by the id both sides know them as. */
-  const open = new Set<string>();
+  const open = new Map<string, { sessionId: string; dialog: boolean }>();
   // The connection the wrapper was given, which is the only thing that can answer a card.
   let inner: ProviderConnection | null = null;
 
@@ -61,13 +62,7 @@ export function sessionNotices(): { transformer: AcpTransformer; wrap(connection
         if (method !== CARD_WITHDRAWN_METHOD) return null;
         const toolCallId = asString(asRecord(params)?.toolCallId);
         if (toolCallId === null || inner === null) return null;
-        const permissionId = `${PERMISSION_ID_PREFIX}${toolCallId}`;
-        // Only a card that is still open, because answering one that is not is what the bridge reports
-        // as the session having failed. Taken out of the set first, so a second withdrawal sends nothing.
-        if (!open.delete(permissionId)) return null;
-        void inner
-          .send({ type: "session.permission", sessionId: context.sessionId, permissionId, response: { behavior: "deny" } })
-          .catch(() => undefined);
+        withdraw(`${PERMISSION_ID_PREFIX}${toolCallId}`, context.sessionId);
         return null;
       },
     },
@@ -79,7 +74,19 @@ export function sessionNotices(): { transformer: AcpTransformer; wrap(connection
         send: (input) => connection.send(input),
         onEvent(listener) {
           return connection.onEvent((event) => {
-            if (event.type === "session.permission") open.add(event.request.id);
+            if (event.type === "session.permission") {
+              const dialog = isDialogPermission(event.request);
+              // A session holds one of Claude's questions at a time, so a card for a new one says every
+              // older dialog card is over -- whatever became of the withdrawal that should have said so.
+              // A card left open is not merely stale: the daemon rebuilds its pending list from the
+              // provider's, so it comes back on screen the next time anything is answered.
+              if (dialog) {
+                for (const [id, card] of open) {
+                  if (card.dialog && card.sessionId === event.sessionId && id !== event.request.id) withdraw(id, event.sessionId);
+                }
+              }
+              open.set(event.request.id, { sessionId: event.sessionId, dialog });
+            }
             if (event.type === "session.permission_resolved") open.delete(event.permissionId);
             // A withdrawal and a person can answer the same card at the same moment, and the loser of
             // that race is what this is. It says the card was answered twice, not that anything failed.
@@ -95,6 +102,16 @@ export function sessionNotices(): { transformer: AcpTransformer; wrap(connection
       };
     },
   };
+
+  /**
+   * Ends a card the way the daemon would: only one that is still open, because answering one that is
+   * not is what the bridge reports as the session having failed. Taken off the list first, so the same
+   * card is never answered twice from here.
+   */
+  function withdraw(permissionId: string, sessionId: string): void {
+    if (inner === null || !open.delete(permissionId)) return;
+    void inner.send({ type: "session.permission", sessionId, permissionId, response: { behavior: "deny" } }).catch(() => undefined);
+  }
 }
 
 /** A notice is only worth emitting where the adapter said all of what one needs; anything else is dropped. */

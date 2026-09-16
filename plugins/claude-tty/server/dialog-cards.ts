@@ -20,8 +20,8 @@ export const DIALOG_INPUT_MARKER = "claudeDialog";
  * again as the card's detail, which is where the app shows a block of text.
  */
 export function dialogPermission(request: ProviderPermissionRequest): ProviderPermissionRequest | null {
-  const input = request.input;
-  if (!input || input[DIALOG_INPUT_MARKER] !== true) return null;
+  if (!isDialogPermission(request)) return null;
+  const input = request.input!;
   const question = readString(input.question);
   const terminal = readString(input.terminal);
   const waitingFor = readString(input.waitingFor);
@@ -39,6 +39,11 @@ export function dialogPermission(request: ProviderPermissionRequest): ProviderPe
     description,
     ...(terminal === undefined ? {} : { detail: { type: "plain_text" as const, label: "Claude's terminal", text: terminal, icon: "wrench" } }),
   };
+}
+
+/** Whether this card stands for one of Claude's own terminal dialogs, which only the adapter raises. */
+export function isDialogPermission(request: ProviderPermissionRequest): boolean {
+  return request.input?.[DIALOG_INPUT_MARKER] === true;
 }
 
 function readString(value: unknown): string | undefined {
