@@ -26,6 +26,16 @@ export const NOTICE_METHOD = "_claude_tty/notice";
  */
 export const CARD_WITHDRAWN_METHOD = "_claude_tty/card_withdrawn";
 
+/**
+ * The model Claude is actually answering on, where that is no longer the one the session was launched
+ * with. ACP carries a session's mode back to the client and nothing else about its configuration --
+ * there is no `current_model_update` beside `current_mode_update` -- so a model Claude swapped for
+ * itself has no way home. The plugin puts it in the picker by re-emitting the session's configuration
+ * with this in it, which is a reading rather than a decision: nothing here re-launches Claude, so the
+ * flag the session was started with is untouched and a restart goes back to it.
+ */
+export const MODEL_CHANGED_METHOD = "_claude_tty/model";
+
 export type VendorNotice = {
   id: string;
   severity: "info" | "warning" | "error";
@@ -35,6 +45,10 @@ export type VendorNotice = {
 
 export async function sendNotice(connection: AgentSideConnection, sessionId: string, notice: VendorNotice): Promise<void> {
   await send(connection, sessionId, NOTICE_METHOD, { sessionId, notice });
+}
+
+export async function sendModelChanged(connection: AgentSideConnection, sessionId: string, model: string): Promise<void> {
+  await send(connection, sessionId, MODEL_CHANGED_METHOD, { sessionId, model });
 }
 
 export async function sendCardWithdrawn(connection: AgentSideConnection, sessionId: string, toolCallId: string): Promise<void> {

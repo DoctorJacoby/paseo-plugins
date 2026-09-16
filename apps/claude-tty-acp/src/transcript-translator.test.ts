@@ -1,7 +1,113 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk";
-import { TOOL_CALL_MIRROR_METHOD, TranscriptTranslator } from "./transcript-translator.ts";
+import { type ModelFallback, TOOL_CALL_MIRROR_METHOD, TranscriptTranslator } from "./transcript-translator.ts";
+
+/**
+ * `switchModelsOnFlag` lets Claude retry a message its model's safeguards flagged on a fallback model,
+ * and this record is the only account of it. The shape is copied from a real one, written on
+ * 2026-09-11 into `~/.claude/projects/-home-kobe-dotfiles/8b06973d-....jsonl`.
+ */
+function modelFallbackRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    type: "system",
+    uuid: "system-fallback-1",
+    subtype: "model_refusal_fallback",
+    level: "warning",
+    content: "Fable 5's safeguards flagged this message, so it was retried on Opus 4.8.",
+    direction: "retry",
+    scope: "session",
+    originalModel: "claude-fable-5",
+    fallbackModel: "claude-opus-4-8",
+    timestamp: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+test("hands a model Claude switched under a live session to the runtime, rather than to the conversation", async () => {
+  const notifications: SessionNotification[] = [];
+  const connection = {
+    sessionUpdate: async (notification: SessionNotification) => {
+      notifications.push(notification);
+    },
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
+  const translator = new TranscriptTranslator("session", "/work/repo", connection);
+  const fallbacks: ModelFallback[] = [];
+  translator.setModelFallbackHandler((fallback) => fallbacks.push(fallback));
+
+  await translator.translate([modelFallbackRecord()]);
+
+  assert.equal(fallbacks.length, 1);
+  assert.equal(fallbacks[0]!.title, "Model switched: Fable 5 → Opus 4.8");
+  // Claude's own sentence, which is what the notice carries; the names are Paseo's for the same models.
+  assert.equal(fallbacks[0]!.description, "Fable 5's safeguards flagged this message, so it was retried on Opus 4.8.");
+  // Session-scoped, so it is what the session is on from here and worth showing in the picker.
+  assert.equal(fallbacks[0]!.model, "claude-opus-4-8");
+  // And it is not also said in the conversation: the notice carries the same sentence, and once is enough.
+  assert.equal(notifications.length, 0);
+
+  // Reading the record again -- which a compaction makes the watcher do -- is the same switch.
+  await translator.translate([modelFallbackRecord()]);
+  assert.equal(fallbacks.length, 1);
+  assert.equal(notifications.length, 0);
+});
+
+test("reads a model switch out of history as the line in the conversation it has always been", async () => {
+  const notifications: SessionNotification[] = [];
+  const connection = {
+    sessionUpdate: async (notification: SessionNotification) => {
+      notifications.push(notification);
+    },
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
+  const translator = new TranscriptTranslator("session", "/work/repo", connection);
+  const fallbacks: ModelFallback[] = [];
+  translator.setModelFallbackHandler((fallback) => fallbacks.push(fallback));
+
+  // A session being loaded replays its whole transcript: everything in it happened before this
+  // translator existed, and a card or a push for a switch from last week is noise.
+  await translator.translate([modelFallbackRecord({ timestamp: "2026-09-11T18:22:04.000Z" })]);
+  // A record with no timestamp at all reads as history for the same reason.
+  await translator.translate([modelFallbackRecord({ uuid: "system-fallback-2", timestamp: undefined })]);
+
+  assert.deepEqual(fallbacks, []);
+  assert.equal(notifications.length, 2);
+  assert.equal(
+    (notifications[0]!.update as { content: { text: string } }).content.text,
+    "Fable 5's safeguards flagged this message, so it was retried on Opus 4.8.",
+  );
+});
+
+test("reads what a switch says about the model the session is on, and says nothing where it says nothing", async () => {
+  const connection = { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection;
+  const translator = new TranscriptTranslator("session", "/work/repo", connection);
+  const fallbacks: ModelFallback[] = [];
+  translator.setModelFallbackHandler((fallback) => fallbacks.push(fallback));
+
+  await translator.translate([
+    // A switch Claude made for one message says nothing about what the session is on.
+    modelFallbackRecord({ uuid: "one", scope: "local" }),
+    // A revert puts back the model the session was launched with.
+    modelFallbackRecord({ uuid: "two", direction: "revert" }),
+    // A model this build has no name for is named the way Claude named it.
+    modelFallbackRecord({ uuid: "three", originalModel: "claude-something-9", fallbackModel: "claude-something-8" }),
+    // And the two other subtypes Claude writes for the same thing are read the same way.
+    modelFallbackRecord({ uuid: "four", subtype: "model_fallback", trigger: "model_not_found" }),
+    modelFallbackRecord({ uuid: "five", subtype: "model_consent_fallback", choice: "switch", persistedAsDefault: false }),
+  ]);
+
+  assert.deepEqual(
+    fallbacks.map((fallback) => [fallback.subtype, fallback.title, fallback.model]),
+    [
+      ["model_refusal_fallback", "Model switched: Fable 5 → Opus 4.8", null],
+      ["model_refusal_fallback", "Model switched back to Fable 5", "claude-fable-5"],
+      ["model_refusal_fallback", "Model switched: claude-something-9 → claude-something-8", "claude-something-8"],
+      ["model_fallback", "Model switched: Fable 5 → Opus 4.8", "claude-opus-4-8"],
+      ["model_consent_fallback", "Model switched: Fable 5 → Opus 4.8", "claude-opus-4-8"],
+    ],
+  );
+});
 
 test("translates messages, reasoning, tools, plans, usage, images, and system activity", async () => {
   const notifications: SessionNotification[] = [];

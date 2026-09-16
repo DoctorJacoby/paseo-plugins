@@ -5,15 +5,16 @@ import type { AcpStream, AcpStreamMessage } from "@getpaseo/plugin/server/acp";
 import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
 import { dialogPermission } from "./dialog-cards.ts";
-import { CARD_WITHDRAWN_METHOD, NOTICE_METHOD, sessionNotices } from "./session-notices.ts";
+import { CARD_WITHDRAWN_METHOD, MODEL_CHANGED_METHOD, NOTICE_METHOD, sessionNotices } from "./session-notices.ts";
 
 const NATIVE_SESSION_ID = "native";
 
 /**
- * Both halves of this are about what the bridge does with what it is handed, so the test drives the real
+ * All three of these are about what the bridge does with what it is handed, so the test drives the real
  * `runAcpProvider` with an ACP agent in front of it rather than faking the connection: a notice is a
- * vendor update the bridge turns into an event, and a withdrawal is the answer the bridge has no other
- * way to be given.
+ * vendor update the bridge turns into an event, a withdrawal is an event the bridge has no route for at
+ * all and the wrapper injects, and a model change is the configuration the bridge itself published with
+ * one field moved.
  */
 test("turns the adapter's notices into timeline notifications, and takes back a card it withdraws", async (t) => {
   const events: ProviderEvent[] = [];
@@ -89,6 +90,17 @@ test("turns the adapter's notices into timeline notifications, and takes back a 
 
   // A notice missing the parts Paseo needs is dropped rather than half-emitted.
   assert.equal(events.filter((event) => event.type === "session.notice").length, 1);
+
+  // The model the session is actually on, which ACP has no update for: the configuration the bridge
+  // published, with one field moved. The model this session's catalogue does not list is ignored, so the
+  // last configuration to go out is the switch Claude really made.
+  const configs = events.filter((event) => event.type === "session.config");
+  assert.equal(configs.at(-1)?.type === "session.config" ? configs.at(-1)!.config.model : null, "claude-opus-4-8");
+  assert.deepEqual(
+    configs.at(-1)?.type === "session.config" ? configs.at(-1)!.config.models.map((model) => model.id) : [],
+    ["claude-fable-5", "claude-opus-4-8"],
+  );
+  assert.ok(!configs.some((event) => event.type === "session.config" && event.config.model === "claude-from-the-future"));
 });
 
 test("gives a card standing for one of Claude's dialogs the dialog to show", () => {
@@ -135,9 +147,9 @@ async function settled(events: ProviderEvent[], type: ProviderEvent["type"], cou
 }
 
 /**
- * An ACP agent that raises a card, withdraws it, raises a second one, and keeps whatever it is answered
- * — a withdrawn card is one the agent stopped waiting for, and what the bridge does with the request
- * behind it is the whole of this.
+ * An ACP agent that publishes a model picker, raises a card, withdraws it, raises a second one, and
+ * keeps whatever it is answered — a withdrawn card is one the agent stopped waiting for, and what the
+ * bridge does with the request behind it is the whole of this.
  */
 function fakeAgent(answers: Array<{ id: string | number | null; result: unknown }>): AcpStream {
   let send: (message: AcpStreamMessage) => void = () => undefined;
@@ -157,7 +169,28 @@ function fakeAgent(answers: Array<{ id: string | number | null; result: unknown 
         return;
       }
       if (message.method === "session/new") {
-        send({ jsonrpc: "2.0", id: idOf(message), result: { sessionId: NATIVE_SESSION_ID, modes: null, models: null, configOptions: [] } });
+        send({
+          jsonrpc: "2.0",
+          id: idOf(message),
+          result: {
+            sessionId: NATIVE_SESSION_ID,
+            modes: null,
+            models: null,
+            configOptions: [
+              {
+                id: "model",
+                name: "Model",
+                category: "model",
+                type: "select",
+                currentValue: "claude-fable-5",
+                options: [
+                  { value: "claude-fable-5", name: "Fable 5" },
+                  { value: "claude-opus-4-8", name: "Opus 4.8" },
+                ],
+              },
+            ],
+          },
+        });
         return;
       }
       if (message.method === "session/prompt") {
@@ -198,6 +231,9 @@ function fakeAgent(answers: Array<{ id: string | number | null; result: unknown 
             options: [{ optionId: "dialog-dismiss", name: "Dismiss (Esc)", kind: "reject_once" }],
           },
         });
+        // Claude swapped the model under the session, and then again to one this session never offered.
+        send({ jsonrpc: "2.0", method: MODEL_CHANGED_METHOD, params: { sessionId: NATIVE_SESSION_ID, model: "claude-opus-4-8" } });
+        send({ jsonrpc: "2.0", method: MODEL_CHANGED_METHOD, params: { sessionId: NATIVE_SESSION_ID, model: "claude-from-the-future" } });
         return;
       }
       if ("id" in message && message.id !== null && message.id !== undefined) {

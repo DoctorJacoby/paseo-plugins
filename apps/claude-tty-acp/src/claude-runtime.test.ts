@@ -1285,6 +1285,99 @@ test("raises a card for a question Claude opens on its own, and closes it with E
   }
 });
 
+test("says so three ways when Claude swaps the model under a running session", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-model-fallback-test-"));
+  const configDirectory = path.join(root, "claude");
+  const cwd = "/work/model-fallback";
+  const projectDirectory = path.join(configDirectory, "projects", escapeProjectDirName(cwd));
+  await mkdir(projectDirectory, { recursive: true });
+  await mkdir(path.join(root, "runtime"), { recursive: true });
+  const vendor: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const permissionRequests: RequestPermissionRequest[] = [];
+  const connection = {
+    sessionUpdate: async () => undefined,
+    extNotification: async (method: string, params: Record<string, unknown>) => {
+      vendor.push({ method, params });
+    },
+    // The card is never answered: nothing waits for it, and what it is for is the push a new permission
+    // request sends. So this promise is left hanging on purpose.
+    requestPermission: (request: RequestPermissionRequest) => {
+      permissionRequests.push(request);
+      return new Promise<RequestPermissionResponse>(() => undefined);
+    },
+  } as unknown as AgentSideConnection;
+  let agent!: ClaudeTtyAgent;
+  const spawns: SpawnRecord[] = [];
+  const spawnPty = (file: string, args: string[], options: IPtyForkOptions): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    const pty = new FakePty(6900 + spawns.length);
+    spawns.push({ file, args, options, pty });
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(connection, {
+    spawnPty,
+    runtimeRoot: path.join(root, "runtime"),
+    claudeConfigDir: configDirectory,
+    stateDirectory: path.join(root, "state"),
+    startupTimeoutMs: 500,
+    readinessTimeoutMs: 0,
+    submitDelayMs: 0,
+    contextRefreshTimeoutMs: 0,
+    transcriptPollIntervalMs: 10,
+  });
+
+  try {
+    const session = await agent.newSession({ cwd, mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "go" }] });
+    await waitFor(() => spawns.length === 1 && spawns[0]!.pty.writes.length === 2);
+    await appendFile(
+      path.join(projectDirectory, `${session.sessionId}.jsonl`),
+      `${JSON.stringify({
+        type: "system",
+        uuid: "system-fallback-1",
+        subtype: "model_refusal_fallback",
+        level: "warning",
+        content: "Fable 5's safeguards flagged this message, so it was retried on Opus 4.8.",
+        direction: "retry",
+        scope: "session",
+        originalModel: "claude-fable-5",
+        fallbackModel: "claude-opus-4-8",
+        timestamp: new Date().toISOString(),
+      })}\n`,
+    );
+
+    // The notice, which is the timeline's record of it and sends no push.
+    await waitFor(() => vendor.some((update) => update.method === "_claude_tty/notice"));
+    const notice = vendor.find((update) => update.method === "_claude_tty/notice")!.params.notice as { severity: string; title: string; description: string };
+    assert.equal(notice.severity, "warning");
+    assert.equal(notice.title, "Model switched: Fable 5 → Opus 4.8");
+    assert.equal(notice.description, "Fable 5's safeguards flagged this message, so it was retried on Opus 4.8.");
+    // The model the session is on from here, which ACP has no update for and the plugin puts in the picker.
+    const model = vendor.find((update) => update.method === "_claude_tty/model");
+    assert.equal(model?.params.model, "claude-opus-4-8");
+    // And a card, which is the only thing in Paseo that pushes to a phone.
+    await waitFor(() => permissionRequests.length === 1);
+    assert.equal(permissionRequests[0]!.toolCall.title, "Model switched: Fable 5 → Opus 4.8");
+    assert.deepEqual(permissionRequests[0]!.options, [{ optionId: "acknowledge", name: "OK", kind: "reject_once" }]);
+
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+
+    // The card nobody answered does not stand between the session and the next message: it is taken down
+    // as the prompt goes in, on both sides.
+    const second = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "again" }] });
+    await waitFor(() => vendor.some((update) => update.method === "_claude_tty/card_withdrawn"));
+    assert.equal(vendor.find((update) => update.method === "_claude_tty/card_withdrawn")!.params.toolCallId, permissionRequests[0]!.toolCall.toolCallId);
+    await waitFor(() => spawns[0]!.pty.writes.length === 4);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done again" });
+    assert.deepEqual(await second, { stopReason: "end_turn" });
+  } finally {
+    await agent.close();
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("sends the prompt as usual when Claude says nothing else has the keyboard", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-no-dialog-test-"));
   const configDirectory = path.join(root, "claude");

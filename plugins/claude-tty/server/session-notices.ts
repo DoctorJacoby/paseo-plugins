@@ -1,10 +1,11 @@
 import type { AcpTransformer, AcpVendorUpdate } from "@getpaseo/plugin/server/acp";
-import type { ProviderConnection, ProviderEvent, ProviderNotice } from "@getpaseo/plugin/server/provider";
+import type { ProviderConfigState, ProviderConnection, ProviderEvent, ProviderNotice } from "@getpaseo/plugin/server/provider";
 import { isDialogPermission } from "./dialog-cards.ts";
 
 /** Mirrors the adapter's own `vendor-updates.ts`; the plugin runs in the daemon and cannot import it. */
 export const NOTICE_METHOD = "_claude_tty/notice";
 export const CARD_WITHDRAWN_METHOD = "_claude_tty/card_withdrawn";
+export const MODEL_CHANGED_METHOD = "_claude_tty/model";
 
 /** The id `runAcpProvider` gives a permission it raises, which is the only handle both sides share. */
 const PERMISSION_ID_PREFIX = "permission:";
@@ -15,7 +16,7 @@ const SEVERITIES = new Set<ProviderNotice["severity"]>(["info", "warning", "erro
 const UNKNOWN_PERMISSION = /Unknown ACP permission/i;
 
 /**
- * The two things the adapter has to say that ACP has no word for.
+ * The three things the adapter has to say that ACP has no word for.
  *
  * A **notice** is Paseo's own timeline notification -- `session.notice`, an item rather than a message,
  * and no push. It is how something that happened *to* the session gets said: a question of Claude's
@@ -46,10 +47,17 @@ const UNKNOWN_PERMISSION = /Unknown ACP permission/i;
  * `Unknown ACP permission` failure is dropped on the way out because this is the only thing that causes
  * one and it means the card was answered twice, not that the session is broken.
  *
- * The transformer and the wrapper are made here together, because the transformer is what hears the
- * adapter's notification and the wrapper is the only thing that can reach the connection.
+ * A **model change** is the third. Claude can swap the model underneath a running session -- a message
+ * its safeguards flag is retried on a fallback model -- and ACP has no update for that: it carries a
+ * session's mode home over `current_mode_update` and nothing else about its configuration. The bridge
+ * does have a `config` vendor update, but it replaces the whole `ProviderConfigState` rather than
+ * patching it, and a transformer is handed no state at all. So the wrapper keeps the last configuration
+ * the bridge published for each session, and the change is that snapshot with one field moved. A model
+ * the session's own catalogue does not list is ignored rather than shown, because a picker set to an
+ * option it does not have is worse than a picker that is one switch out of date.
  */
 export function sessionNotices(): { transformer: AcpTransformer; wrap(connection: ProviderConnection): ProviderConnection } {
+  const configs = new Map<string, ProviderConfigState>();
   /** The cards the daemon still has open, by the id both sides know them as. */
   const open = new Map<string, { sessionId: string; dialog: boolean }>();
   // The connection the wrapper was given, which is the only thing that can answer a card.
@@ -59,6 +67,7 @@ export function sessionNotices(): { transformer: AcpTransformer; wrap(connection
     transformer: {
       notification({ method, params }, context): AcpVendorUpdate | null {
         if (method === NOTICE_METHOD) return noticeUpdate(params);
+        if (method === MODEL_CHANGED_METHOD) return modelUpdate(params, configs.get(context.sessionId));
         if (method !== CARD_WITHDRAWN_METHOD) return null;
         const toolCallId = asString(asRecord(params)?.toolCallId);
         if (toolCallId === null || inner === null) return null;
@@ -74,6 +83,9 @@ export function sessionNotices(): { transformer: AcpTransformer; wrap(connection
         send: (input) => connection.send(input),
         onEvent(listener) {
           return connection.onEvent((event) => {
+            // The configuration the bridge publishes is the only copy of it there is, and the model
+            // change below is that copy with one field moved.
+            if (event.type === "session.config") configs.set(event.sessionId, event.config);
             if (event.type === "session.permission") {
               const dialog = isDialogPermission(event.request);
               // A session holds one of Claude's questions at a time, so a card for a new one says every
@@ -88,6 +100,7 @@ export function sessionNotices(): { transformer: AcpTransformer; wrap(connection
               open.set(event.request.id, { sessionId: event.sessionId, dialog });
             }
             if (event.type === "session.permission_resolved") open.delete(event.permissionId);
+            if (event.type === "session.closed" || event.type === "session.runtime_failed") configs.delete(event.sessionId);
             // A withdrawal and a person can answer the same card at the same moment, and the loser of
             // that race is what this is. It says the card was answered twice, not that anything failed.
             if (event.type === "session.runtime_failed" && UNKNOWN_PERMISSION.test(event.error.message)) return;
@@ -95,6 +108,7 @@ export function sessionNotices(): { transformer: AcpTransformer; wrap(connection
           });
         },
         async close() {
+          configs.clear();
           open.clear();
           inner = null;
           await connection.close();
@@ -131,6 +145,18 @@ function noticeUpdate(params: unknown): AcpVendorUpdate | null {
       ...(description === null ? {} : { description }),
     },
   };
+}
+
+/**
+ * The session's configuration with the model Claude switched to in it. Nothing is emitted where there
+ * is no configuration to patch yet, or where the model is one this session's catalogue does not offer.
+ */
+function modelUpdate(params: unknown, config: ProviderConfigState | undefined): AcpVendorUpdate | null {
+  const model = asString(asRecord(params)?.model);
+  if (model === null || config === undefined) return null;
+  if (!config.models.some((entry) => entry.id === model || entry.aliases?.includes(model))) return null;
+  if (config.model === model) return null;
+  return { type: "config", config: { ...config, model } };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

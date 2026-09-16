@@ -15,9 +15,10 @@ import { markRuntimeDirectory, runtimePrefix } from "./runtime-directories.ts";
 import { INHERIT_EFFORT_ID, INHERIT_MODEL_ID } from "./session-options.ts";
 import { claudeIsWaitingFor } from "./session-status.ts";
 import { TERMINAL_COLS, TERMINAL_ROWS, TerminalScreen } from "./terminal-screen.ts";
+import { sendCardWithdrawn, sendModelChanged, sendNotice } from "./vendor-updates.ts";
 import { SubagentWatcher } from "./subagent-watcher.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
-import { TranscriptTranslator } from "./transcript-translator.ts";
+import { type ModelFallback, TranscriptTranslator } from "./transcript-translator.ts";
 import { TranscriptWatcher } from "./transcript-watcher.ts";
 
 const STARTUP_TIMEOUT_MS = 15_000;
@@ -120,6 +121,14 @@ const STALE_RESUME_SELECTION_TIMEOUT_MS = 3_000;
 // A resumed session paints its whole conversation before its input box exists, and text inside that conversation can satisfy every readiness signal on its own.
 // Readiness therefore also requires Claude to have stopped painting, because a paste sent mid-restore is dropped without an echo to notice it by.
 const READY_QUIET_MS = 400;
+/**
+ * How long a card that only tells somebody something stays up when nobody answers it.
+ *
+ * Nothing waits for one -- Claude has already done whatever the card is about -- so its whole purpose
+ * is the push a new permission request sends. Left up forever it would keep the session unsuspendable,
+ * since a session with a card open is one somebody may still be answering.
+ */
+const ACKNOWLEDGEMENT_MS = 10 * 60_000;
 
 /** One of the menus Claude opens on its way up, as the adapter has to answer it. */
 type StartupMenu = {
@@ -241,6 +250,8 @@ export class ClaudeRuntime {
   private backgroundHold: NodeJS.Timeout | null = null;
   private heldAssistantMessage: string | undefined;
   private heldAt = 0;
+  /** Cards that say something happened and wait for nobody: a prompt or a timeout takes one down. */
+  private readonly acknowledgements = new Map<string, () => void>();
   /** When Claude last called a hook, which it does only while it is doing something. */
   private lastHookAt = 0;
   private intentionalExit: Deferred<void> | null = null;
@@ -304,6 +315,9 @@ export class ClaudeRuntime {
     this.runtimeRoot = dependencies.runtimeRoot ?? os.tmpdir();
     this.translator = dependencies.translator ?? new TranscriptTranslator(sessionId, cwd, connection);
     this.transcript = this.createTranscriptWatcher(claudeSessionId, dependencies.transcriptFilePath);
+    // Only a runtime reports these, which is the whole of why a replayed session never does: it has one
+    // translator and no runtime at all until somebody prompts it.
+    this.translator.setModelFallbackHandler((fallback) => void this.reportModelFallback(fallback));
   }
 
   get started(): boolean {
@@ -340,6 +354,10 @@ export class ClaudeRuntime {
     this.cancelRequested = false;
     this.contextWaitCancelled = false;
     this.interactions.beginTurn();
+    // `beginTurn` lets go of every card this side is waiting on, and this is what says so to the client
+    // for the ones nobody was going to answer. A message is being sent; the acknowledgement it would
+    // have interrupted has been read by definition.
+    await this.withdrawAcknowledgements();
     this.assistantBaseline = this.translator.assistantChunks;
     this.translator.trackBackgroundWork();
     try {
@@ -425,6 +443,8 @@ export class ClaudeRuntime {
     if (this.closed) return;
     this.closed = true;
     this.dialogs.stop();
+    this.translator.setModelFallbackHandler(null);
+    await this.withdrawAcknowledgements();
     if (this.cancelTimer) clearTimeout(this.cancelTimer);
     this.cancelTimer = null;
     this.ready?.reject(new Error(`Session ${this.sessionId} closed before Claude became ready`));
@@ -448,6 +468,75 @@ export class ClaudeRuntime {
     await this.settleOpenToolCalls();
     this.screen.dispose();
     await this.removeRuntimeDirectory();
+  }
+
+  /**
+   * Claude changed the model underneath this session, which is a thing that happens to a person rather
+   * than something they did: `switchModelsOnFlag` retries a message the model's safeguards flagged on a
+   * fallback model and writes a line to the transcript, and that line was all there was.
+   *
+   * Three things go out for one. A notice, which is Paseo's timeline notification and sends no push, so
+   * the session carries the record of what happened whether or not anybody was looking. The model the
+   * session's picker shows, where the switch was for the session rather than for one message -- the
+   * launch flag is untouched, so a restart puts the model back to the one that was chosen, which is
+   * what makes this a reading rather than a decision. And a card with a single OK, purely because a new
+   * permission request is what makes Paseo push to a phone, and a model silently swapped mid-run is
+   * worth waking somebody for.
+   *
+   * None of it blocks Claude: nothing is awaited on the transcript's path, and the card waits for an
+   * answer nothing needs.
+   */
+  private async reportModelFallback(fallback: ModelFallback): Promise<void> {
+    if (this.closed) return;
+    writeLog({ level: "warn", message: "Claude switched the model under this session", sessionId: this.sessionId, subtype: fallback.subtype, title: fallback.title, model: fallback.model });
+    await sendNotice(this.connection, this.sessionId, {
+      id: fallback.id,
+      severity: "warning",
+      title: fallback.title,
+      description: fallback.description,
+    });
+    if (fallback.model) await sendModelChanged(this.connection, this.sessionId, fallback.model);
+    await this.acknowledge(fallback.id, fallback.title, fallback.description);
+  }
+
+  /**
+   * A card that tells rather than asks. Its one option is a declining one, like every card whose answer
+   * is not a decision, and nothing is done with the answer: the point of it is the push.
+   */
+  private async acknowledge(id: string, title: string, description: string): Promise<void> {
+    const request = this.interactions.openRequest({
+      toolCall: {
+        toolCallId: id,
+        title,
+        kind: "other",
+        status: "pending",
+        rawInput: { notice: description },
+      },
+      options: [{ optionId: "acknowledge", name: "OK", kind: "reject_once" }],
+    });
+    this.acknowledgements.set(id, request.withdraw);
+    const expiry = setTimeout(() => void this.withdrawAcknowledgement(id), ACKNOWLEDGEMENT_MS);
+    expiry.unref();
+    const response = await request.response;
+    // A card somebody answered is gone from the client by itself. One resolved here without an answer is
+    // not: `cancelPending` lets go of every card this side is waiting on at the end of every turn, and
+    // saying nothing then would leave this one on screen for good. So it stays on the list, where a
+    // prompt or the timeout takes it down on the client too.
+    if (response.outcome.outcome === "cancelled" && this.acknowledgements.has(id)) return;
+    clearTimeout(expiry);
+    this.acknowledgements.delete(id);
+  }
+
+  private async withdrawAcknowledgement(id: string): Promise<void> {
+    const withdraw = this.acknowledgements.get(id);
+    if (!withdraw) return;
+    this.acknowledgements.delete(id);
+    withdraw();
+    await sendCardWithdrawn(this.connection, this.sessionId, id);
+  }
+
+  private async withdrawAcknowledgements(): Promise<void> {
+    for (const id of [...this.acknowledgements.keys()]) await this.withdrawAcknowledgement(id);
   }
 
   private async ensureStarted(): Promise<void> {

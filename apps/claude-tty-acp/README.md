@@ -293,6 +293,19 @@ What the adapter answers itself is never carded: the workspace trust screen, the
 Neither is a wait a hook is already asking about — a permission, an `AskUserQuestion`, a plan — because the card for that is already on screen.
 Every transition into a dialog is logged with the screen it was on, because the list of these grows with every Claude release and the log is how the next one gets read properly.
 
+### A model Claude swaps for itself is said three ways
+
+With `switchModelsOnFlag` on, a message the model's own safeguards flag is not refused: Claude retries it on a fallback model and writes one line into the transcript — `model_refusal_fallback`, with its own sentence, the two models, a direction and a scope.
+`model_fallback` is the same machinery for a model that could not be used at all, and `model_consent_fallback` for a switch somebody agreed to.
+Until this the line arrived in the conversation as a sentence from Claude and nothing else, which is a strange way to learn that the last half hour was answered by a different model.
+
+A switch that happens while the session is running produces a **notice** in the timeline (`Model switched: Fable 5 → Opus 4.8`, with Claude's sentence under it), a **model change** for the session's picker where the switch was for the session rather than for one message, and a **card with a single OK**, which exists because a new permission request is the only thing in Paseo that pushes to a phone.
+Nothing waits for that card: Claude has already done the thing it is about, it is withdrawn as the next prompt goes in, and it withdraws itself after ten minutes so a session cannot be left unsuspendable by a card nobody clicked.
+The picker is a reading, not a decision — the model the session was launched with is untouched, so changing the model, mode or effort, or any other restart, puts Claude back on it.
+
+None of it happens for a switch read back out of history.
+A session being loaded replays its whole transcript, and a compaction has it re-read from the start, so a switch is only reported when the record was written after the session's translator was made and while Claude is actually running; anything older keeps the sentence in the conversation exactly as before.
+
 ### State on disk
 
 The state directory holds one JSON file per session, mapping the Paseo session ID to Claude's own session ID, cwd, model, mode and effort, plus a lock file naming the process that has the session open.
