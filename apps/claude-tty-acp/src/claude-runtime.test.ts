@@ -17,6 +17,8 @@ import { escapeProjectDirName } from "./transcript-reader.ts";
 const CLEAR_INPUT_LINE = "\u0015";
 /** The clear stops after this many readings of an empty box, which is all an empty one costs. */
 const CLEAR_INPUT_CONFIRMATIONS = 3;
+/** And after this many keys that changed nothing, which is what a box it cannot empty costs. */
+const CLEAR_INPUT_UNCHANGED = 4;
 
 class FakePty {
   readonly pid: number;
@@ -773,9 +775,11 @@ test("clears what an interrupt left in Claude's input box before pasting the nex
     await waitFor(() => pty !== undefined && pty.writes.length === 2);
     // The clear goes first, so what Claude reads is this prompt and not it run together with the old one.
     assert.deepEqual(keySequence(pty.keystrokes), ["clear", "\u001b[200~hello \u001b[201~", "\r"]);
-    // A key per line of the box, because Ctrl-U only kills the line the cursor is on and Claude wraps a long
-    // prompt across several; a box this fake never redraws is the case that runs the bound out.
-    assert.equal(clearKeys(pty.keystrokes), TERMINAL_ROWS);
+    // A key per line of the box, because Ctrl-U only kills the line the cursor is on and Claude wraps a
+    // long prompt across several. This fake never redraws, so the keys stop once they are visibly doing
+    // nothing -- give or take the one whose reading caught the screen still being painted. The screenful
+    // is still the bound, and is what a box that goes on changing is allowed.
+    assert.ok(clearKeys(pty.keystrokes) <= CLEAR_INPUT_UNCHANGED + 1, `cleared with ${clearKeys(pty.keystrokes)} keys`);
     // And each of them its own write: in one write Claude reads them as text and types them into the box.
     assert.ok(pty.keystrokes.every((key) => key === CLEAR_INPUT_LINE || !key.includes(CLEAR_INPUT_LINE)));
     await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
@@ -864,6 +868,54 @@ test("clears a residue Claude had wrapped, not just the last line of it", async 
     // the third of those readings is the one the last of the three keys made. The bound is a screenful;
     // what a clear costs on a box the screen can be read is what the box was holding.
     assert.equal(clearKeys(pty.keystrokes), 3 + CLEAR_INPUT_CONFIRMATIONS - 1);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+  } finally {
+    await agent.close();
+    await rm(runtimeRoot, { force: true, recursive: true });
+  }
+});
+
+test("stops clearing a box holding a suggestion Claude is offering rather than text anybody typed", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-clear-suggestion-test-"));
+  let agent!: ClaudeTtyAgent;
+  let pty!: FakePty;
+  const submitted: string[] = [];
+  // Claude offers a prompt of its own in an empty box, in grey, and Ctrl-U does not take it away:
+  // there is nothing in the box to take. On a screen read for its characters it is indistinguishable
+  // from something typed, so the keys have to stop on their own once they stop changing anything.
+  const SUGGESTION = "Try /rewind to undo the last change";
+
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    let box = "";
+    const draw = (): void => pty.emitData(`\u001b[2J\u001b[H\u276f ${box === "" ? SUGGESTION : box}\r\n  \u23f8 manual mode on\r\n`);
+    pty = new FakePty(6360, (text) => {
+      const paste = /^\u001b\[200~(.*)\u001b\[201~$/s.exec(text);
+      if (paste) box += paste[1]!;
+      else if (text === "\r") {
+        submitted.push(box);
+        box = "";
+      }
+      // Ctrl-U kills what was typed, and the suggestion is not that: the screen comes back the same.
+      draw();
+    });
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    setImmediate(draw);
+    setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(createConnection([]), { spawnPty, runtimeRoot, stateDirectory: path.join(runtimeRoot, "state"), startupTimeoutMs: 500, readinessTimeoutMs: 0, submitDelayMs: 0, contextRefreshTimeoutMs: 0 });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/clear-suggestion", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }] });
+    await waitFor(() => submitted.length > 0);
+    // The prompt still goes in whole, and it cost four keys rather than the forty a box nothing can
+    // empty used to take on the front of every message.
+    assert.deepEqual(submitted, ["hello "]);
+    // Four keys that changed nothing, plus the one whose reading caught the screen still settling --
+    // rather than the forty a box nothing can empty used to cost on the front of every message.
+    assert.ok(clearKeys(pty.keystrokes) <= CLEAR_INPUT_UNCHANGED + 1, `cleared with ${clearKeys(pty.keystrokes)} keys`);
     await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
     assert.deepEqual(await turn, { stopReason: "end_turn" });
   } finally {

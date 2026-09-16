@@ -83,6 +83,15 @@ const CLEAR_INPUT_KEY_MS = 25;
 // cheapest evidence there is that the box really is empty. A box the screen never shows empty -- a terminal
 // nothing has painted, a reading that keeps coming back full -- takes the whole screenful and stops there.
 const CLEAR_INPUT_CONFIRMATIONS = 3;
+// How many keys a box that stops changing is given before the run ends.
+//
+// Not everything in Claude's input box is in Claude's input box. It offers a prompt of its own in an
+// empty one -- grey ghost text, which reads exactly like typed text on a screen scraped for its
+// characters -- and Ctrl-U does not remove it, because there is nothing there to remove. Without this
+// every prompt sent to a session that was showing one paid the whole screenful, a second of keys, and
+// then logged a box it had failed to empty. A key that changes nothing on the screen below the box did
+// nothing, and a few of those in a row is the end of what this can do, whatever the reason.
+const CLEAR_INPUT_UNCHANGED = 4;
 const ESCAPE = "\u001b";
 const CARRIAGE_RETURN = "\r";
 const CONTROL_D = "\u0004";
@@ -849,18 +858,32 @@ export class ClaudeRuntime {
    * of every prompt. The reading is not trusted on its own, because the screen is sampled and a paste too
    * recent to have been rendered is exactly the residue worth clearing: the run ends on a few empty
    * readings in a row, and a box that never reads empty gets the screenful the bound allows and no more.
+   *
+   * It also ends where the keys have stopped changing anything. Claude puts a suggested prompt in an
+   * empty box as grey ghost text, which is not content and cannot be killed, but reads as content to
+   * anything that scrapes the characters off a screen -- so a box showing one would otherwise take every
+   * key of the bound, every time, and report itself uncleared afterwards. What is compared is the screen
+   * from the box down rather than the box's own line, because Ctrl-U kills the last of the lines a long
+   * prompt wrapped onto and leaves the first, which is the line the box is read from: on a wrapped
+   * residue that line reads the same between keys while the box is visibly emptying.
    */
   private async clearInputBox(): Promise<void> {
     const held = inputBoxContent(this.screen.snapshot());
     let keys = 0;
     let empties = 0;
-    while (keys < TERMINAL_ROWS && empties < CLEAR_INPUT_CONFIRMATIONS) {
+    let unchanged = 0;
+    let previous = inputBoxTail(this.screen.snapshot());
+    while (keys < TERMINAL_ROWS && empties < CLEAR_INPUT_CONFIRMATIONS && unchanged < CLEAR_INPUT_UNCHANGED) {
       this.pty?.write(CLEAR_INPUT_LINE);
       keys += 1;
       await delay(this.clearInputKeyMs);
+      const screen = this.screen.snapshot();
       // A screen with no input box on it at all -- a terminal Claude has painted nothing to yet -- says
       // nothing is being held any more than an empty box does, and is counted the same way.
-      empties = (inputBoxContent(this.screen.snapshot()) || "") === "" ? empties + 1 : 0;
+      empties = (inputBoxContent(screen) || "") === "" ? empties + 1 : 0;
+      const tail = inputBoxTail(screen);
+      unchanged = tail === previous ? unchanged + 1 : 0;
+      previous = tail;
     }
     if (held) {
       writeLog({
@@ -871,6 +894,9 @@ export class ClaudeRuntime {
         keys,
         // Whether the box was empty when the keys stopped, rather than the run simply having run out.
         emptied: empties >= CLEAR_INPUT_CONFIRMATIONS,
+        // And whether they stopped because nothing was moving, which is what a suggestion Claude is
+        // offering looks like from here: read as held, and not there to be cleared.
+        unchanged: unchanged >= CLEAR_INPUT_UNCHANGED,
       });
     }
   }
@@ -1224,6 +1250,16 @@ function inputBoxContent(screen: string): string | null {
     if (match) return match[1]!.trim();
   }
   return null;
+}
+
+/**
+ * The screen from Claude's input box down: the box, whatever it has wrapped onto, and the footer under
+ * it. What a Ctrl-U that did something changes, and what one that did nothing leaves exactly as it was.
+ */
+function inputBoxTail(screen: string): string {
+  const lines = screen.split("\n");
+  const index = lines.findLastIndex((line) => /^\s*❯/.test(line));
+  return (index < 0 ? lines : lines.slice(index)).join("\n");
 }
 
 function inputBoxHolds(screen: string, echo: string): boolean {
