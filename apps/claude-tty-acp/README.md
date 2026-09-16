@@ -273,6 +273,10 @@ Pressing Down until the marker comes round — which is how the startup dialogs 
 A row the marker will not reach is escaped rather than pressed at, and so is a card answered with an option this session has no row for.
 Answering one of these routinely opens the next — `/rewind` asks which checkpoint and then asks what to restore — so the dialog that follows gets a card of its own, while the one just answered does not get a second card if it is still on screen.
 
+A list longer than the window Claude draws it in is offered as what the window was showing, and the card says so; `↑ 4 more above` is a fact about the window rather than a row or part of the question, so it is kept out of both.
+Which rows those are changes while the card is up — the list scrolls — so answering looks for the row wherever the window has moved to: the marker is walked one way until the row is drawn again and then the other, and only a row neither end turns up is escaped.
+Rows Claude never drew are not offered at all, because enumerating them would mean walking its selection around a question nobody has answered yet, and this whole surface exists because keys landing in Claude's dialogs is what went wrong in the first place.
+
 The card is taken back down whenever the question stops being one this session is waiting on: Claude times two of its nudges out after thirty seconds, a prompt arriving closes whatever is open to get the keyboard back, and a turn ending lets go of every card the adapter was waiting on at once.
 That last one is the easiest to leave behind and the worst to: Paseo goes on showing a card the adapter has stopped waiting for, and the daemon rebuilds its list of pending cards from the provider's own, so a card left open there comes back on screen the next time anything is answered.
 ACP has no way to withdraw a permission request — the agent asks and waits, and only the client ever ends one — so the plugin answers it on the daemon's side, over the same vendor channel the tool-call mirror uses.

@@ -10,7 +10,12 @@ import { sendCardWithdrawn, sendNotice } from "./vendor-updates.ts";
 export const DIALOG_POLL_MS = 400;
 /** How long each key gets to move the marker, and how long the whole of that may take. */
 export const DIALOG_ANSWER_KEY_MS = 200;
-export const DIALOG_ANSWER_TIMEOUT_MS = 3_000;
+/**
+ * Long enough to walk a list that scrolls. A row is only ever offered because it was on screen when the
+ * card went up, so the marker is never more than a window or two away from it -- but it may have to go
+ * to one end of the list and back before the row is drawn again.
+ */
+export const DIALOG_ANSWER_TIMEOUT_MS = 6_000;
 /** How long Claude is given to stop waiting once its question has been answered or dismissed. */
 export const DIALOG_SETTLE_MS = 1_500;
 /**
@@ -223,6 +228,8 @@ export class DialogWatcher {
           waitingFor,
           question: dialog.question,
           choices: dialog.choices.map((choice) => (choice.detail === "" ? choice.label : `${choice.label} — ${choice.detail}`)),
+          // The rows are what the window shows, and Claude said there are more of them.
+          scrolls: dialog.scrolls,
           // The dialog as drawn, so a card built from a reading that found no rows can still be read.
           terminal: dialog.text,
         },
@@ -239,6 +246,7 @@ export class DialogWatcher {
       title: dialog.title,
       question: dialog.question,
       choices: dialog.choices.map((choice) => choice.label),
+      scrolls: dialog.scrolls,
       // The whole screen rather than the part that was parsed, because the point of this line is the
       // dialogs nobody has parsed yet: what a reading missed is never inside what it read.
       screen: this.options.screen(),
@@ -332,23 +340,41 @@ export class DialogWatcher {
    * one of these -- measured on Claude Code v2.1.269, `/rewind` opens with the marker on its last row
    * and Down there does nothing at all, because the list does not wrap. Pressing towards the row works
    * whether it wraps or not, and a list that ignores the keys times out and is escaped instead.
+   *
+   * A list longer than its window needs one more thing. The rows on screen when the card is answered
+   * are not always the rows that were on screen when it went up -- `/rewind` scrolls, and a minute of
+   * a session moves it -- so a row that is nowhere in the window is looked for rather than given up on:
+   * the marker is walked one way, which is what scrolls the list, until the row is drawn again or the
+   * end of the list is reached, and then the other way. Only a row neither end turns up is escaped.
    */
   private async moveTo(dialog: DialogReading, label: string): Promise<"confirmed" | "gone" | "stuck"> {
     const deadline = Date.now() + this.answerTimeoutMs;
+    let searching: "up" | "down" = "up";
+    let turned = 0;
+    let previous = "";
     while (Date.now() < deadline) {
       const now = readDialog(this.options.lines());
       if (!now || !sameDialog(now, dialog)) return "gone";
       const target = now.choices.findIndex((choice) => choice.label === label);
       const selected = now.choices.findIndex((choice) => choice.selected);
-      if (target < 0 || selected < 0) return "stuck";
-      if (selected === target) {
+      if (selected < 0) return "stuck";
+      if (target === selected) {
         // The marker moves before the state behind it does, so the row is read once more on the way out.
         await delay(this.answerKeyMs);
         if (!choiceSelected(this.options.lines(), label)) continue;
         this.options.press("enter");
         return "confirmed";
       }
-      this.options.press(selected > target ? "up" : "down");
+      const window = windowOf(now);
+      if (target < 0 && window === previous) {
+        // The keys have stopped moving anything, so this end of the list has been reached. The row is
+        // the other way, or it is not there at all.
+        if (turned > 0) return "stuck";
+        turned += 1;
+        searching = searching === "up" ? "down" : "up";
+      }
+      previous = window;
+      this.options.press(target < 0 ? searching : selected > target ? "up" : "down");
       await delay(this.answerKeyMs);
     }
     return "stuck";
@@ -413,6 +439,11 @@ export function dialogOptions(dialog: DialogReading): PermissionOption[] {
       }))
       .filter((option) => option.name !== ""),
   ];
+}
+
+/** What the window is showing, as one string: the rows in it and which of them the marker is on. */
+function windowOf(dialog: DialogReading): string {
+  return dialog.choices.map((choice) => `${choice.selected ? ">" : " "}${choice.label}`).join("\n");
 }
 
 function delay(milliseconds: number): Promise<void> {

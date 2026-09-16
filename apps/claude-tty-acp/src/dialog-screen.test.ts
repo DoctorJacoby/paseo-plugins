@@ -55,6 +55,34 @@ const REWIND_DIALOG = screen([
   ["   Enter to continue · Esc to cancel", "p246"],
 ]);
 
+/**
+ * `/rewind` on a session with more checkpoints than Claude draws at once, in the two windows a live
+ * session showed: the one a card was built from, and the one on screen when that card was answered a
+ * minute later. The list had scrolled, and the answer was dropped as belonging to another dialog.
+ */
+const REWIND_WINDOW_ONE = screen([
+  [RULE, "p153"],
+  ["   Rewind", "p153"],
+  ["   Restore the code and/or conversation to the point before…", "default"],
+  ["    ↑ 1 more above", "p246"],
+  ["     Reply with exactly: THIRD", "default"],
+  ["     No code changes", "p246"],
+  ["   ❯ (current)", "p153"],
+  ["   Enter to continue · Esc to cancel", "p246"],
+]);
+
+const REWIND_WINDOW_TWO = screen([
+  [RULE, "p153"],
+  ["   Rewind", "p153"],
+  ["   Restore the code and/or conversation to the point before…", "default"],
+  ["     Reply with exactly: READY", "default"],
+  ["     No code changes", "p246"],
+  ["   ❯ Reply with exactly: THIRD", "p153"],
+  ["     No code changes", "p246"],
+  ["    ↓ 1 more below", "p246"],
+  ["   Enter to continue · Esc to cancel", "p246"],
+]);
+
 /** The auto-mode setup question, which numbers nothing and marks the row it is on the same way. */
 const CHECKBOX_DIALOG = plain([
   "Claude Code reads this project, your recent Claude sessions, and optionally your shell history.",
@@ -205,6 +233,48 @@ test("tells a dialog from the input box that was on screen a render earlier", ()
   // A dialog whose rows could not be made out is a different thing: it has its text, and a card carrying
   // that is worth raising even though nothing here could parse it.
   assert.equal(dialogIsReadable(readDialog("Claude needs to run a command outside its sandbox.")!), true);
+});
+
+test("reads a list longer than its window without the line that says so", () => {
+  const dialog = readDialog(REWIND_WINDOW_TWO);
+  // The `↓ 1 more below` line is neither a row nor part of the question. It is a fact about the window,
+  // and one that changes as the window moves.
+  assert.equal(dialog?.question, "Restore the code and/or conversation to the point before…");
+  assert.deepEqual(
+    dialog?.choices.map((choice) => choice.label),
+    ["Reply with exactly: READY", "Reply with exactly: THIRD"],
+  );
+  // What it does say is kept, because a card built from it is offering part of a list.
+  assert.equal(dialog?.scrolls, true);
+  assert.equal(readDialog(REWIND_WINDOW_ONE)?.scrolls, true);
+  assert.equal(readDialog(CHECKBOX_DIALOG)?.scrolls, false);
+  // And the indicator is still in the dialog as drawn, which is what the card shows a person.
+  assert.ok(dialog?.text.includes("1 more below"));
+});
+
+test("reads two windows of a scrolling list as the same dialog", () => {
+  // This is the live failure: the card was raised on the first window and answered against the second,
+  // and requiring the same rows made a dialog nobody had closed look like one that had gone.
+  assert.ok(sameDialog(readDialog(REWIND_WINDOW_ONE), readDialog(REWIND_WINDOW_TWO)));
+  // The question Claude opens *after* that one shares its title and is not the same dialog.
+  const confirm = screen([
+    [RULE, "p153"],
+    ["   Rewind", "p153"],
+    ["   Confirm you want to restore to the point before you sent this message:", "default"],
+    ["   ❯ Restore conversation", "p153"],
+    ["     Never mind", "default"],
+    ["   Enter to continue · Esc to cancel", "p246"],
+  ]);
+  assert.ok(!sameDialog(readDialog(REWIND_WINDOW_ONE), readDialog(confirm)));
+  // Neither is a window of some other list that happens to be titled the same way.
+  const elsewhere = screen([
+    [RULE, "p153"],
+    ["   Rewind", "p153"],
+    ["   Restore the code and/or conversation to the point before…", "default"],
+    ["   ❯ Reply with exactly: SOMETHING ELSE", "p153"],
+    ["   Enter to continue · Esc to cancel", "p246"],
+  ]);
+  assert.ok(!sameDialog(readDialog(REWIND_WINDOW_ONE), readDialog(elsewhere)));
 });
 
 test("stops following rows at the line that says which keys answer them", () => {

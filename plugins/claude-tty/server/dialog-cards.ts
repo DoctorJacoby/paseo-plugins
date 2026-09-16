@@ -28,6 +28,8 @@ export function dialogPermission(request: ProviderPermissionRequest): ProviderPe
   const description = [
     question ?? `Claude is waiting on ${waitingFor ?? "an answer"} in its terminal.`,
     terminal === undefined ? undefined : `Claude's terminal:\n${terminal}`,
+    // A list longer than the room Claude draws it in offers only what was on screen when it was read.
+    input.scrolls === true ? "This list is longer than Claude's window: the rows below are the ones it was showing." : undefined,
     "Answering moves Claude's own selection and presses Enter. Dismiss closes the question unanswered.",
   ]
     .filter((part): part is string => part !== undefined)

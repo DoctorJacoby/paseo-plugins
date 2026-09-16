@@ -47,6 +47,11 @@ export type DialogReading = {
   /** What the dialog says about itself under that title. */
   question: string;
   choices: DialogChoice[];
+  /**
+   * The list is longer than the window it is drawn in, so `choices` is what is on screen rather than
+   * everything there is to choose. Claude says so with an `↑ 3 more above` line of its own.
+   */
+  scrolls: boolean;
   /** The dialog as drawn, which is what a reading with no rows in it still has to offer. */
   text: string;
 };
@@ -78,6 +83,13 @@ const RULE = /^[▔▁─━═▬_]{20,}$/;
  * it is not part of the question, and it is what stops both readings from running away down the screen.
  */
 const FOOTER = /(?:enter to (?:confirm|select|submit|set|continue)|esc(?:ape)? to |press (?:enter|esc)|↑\/↓|←\/→|tab to)/i;
+/**
+ * What Claude draws where a list is longer than the room it has: `↑ 1 more above`, `↓ 3 more below`.
+ * It is not a row and it is not part of the question -- it is a fact about the window, and it changes
+ * as the window moves, so a reading that kept it would call the same dialog a different one a moment
+ * later. What it does say is worth keeping, which is what `scrolls` is for.
+ */
+const SCROLL_INDICATOR = /^[↑↓⌃⌄]\s*\d+\s+more\b/i;
 
 /**
  * What the screen says about the dialog Claude is holding the keyboard for, or null where it has
@@ -93,12 +105,20 @@ export function readDialog(screen: string | readonly ScreenLine[]): DialogReadin
     // the last rule -- or the tail of the screen, where there is none -- is the whole of the reading,
     // and the card it makes offers Dismiss and the text.
     const from = ruleAbove(lines, lines.length) ?? lines.length - MAX_QUESTION_LINES;
-    const said = lines
+    const drawn = lines
       .slice(Math.max(0, from))
       .map((line) => line.text.trim())
       .filter((text) => text !== "");
-    return { title: "", question: clamp(said.join("\n"), MAX_QUESTION_CHARS), choices: [], text: clamp(said.join("\n"), MAX_TEXT_CHARS) };
+    const said = drawn.filter((text) => !SCROLL_INDICATOR.test(text));
+    return {
+      title: "",
+      question: clamp(said.join("\n"), MAX_QUESTION_CHARS),
+      choices: [],
+      scrolls: drawn.some((text) => SCROLL_INDICATOR.test(text)),
+      text: clamp(drawn.join("\n"), MAX_TEXT_CHARS),
+    };
   }
+  const scrolls = lines.some((line) => SCROLL_INDICATOR.test(line.text.trim()));
   const marker = MARKER.exec(lines[markerIndex]!.text)!;
   const content = marker[3]!.trim();
   const column = marker[1]!.length + 1 + marker[2]!.length;
@@ -116,7 +136,7 @@ export function readDialog(screen: string | readonly ScreenLine[]): DialogReadin
   const said = lines
     .slice(start, first)
     .map((line) => line.text.trim())
-    .filter((text) => text !== "" && !FOOTER.test(text) && !BOX_TOP.test(text) && !BOX_BOTTOM.test(text));
+    .filter((text) => text !== "" && !FOOTER.test(text) && !BOX_TOP.test(text) && !BOX_BOTTOM.test(text) && !SCROLL_INDICATOR.test(text));
   // Only where the screen said where the dialog starts. A title taken off a few lines of conversation is
   // how the tail of a transcript ended up as the title of a card.
   const title = rule === null ? "" : (said.shift() ?? "");
@@ -128,6 +148,7 @@ export function readDialog(screen: string | readonly ScreenLine[]): DialogReadin
     title: clamp(title, MAX_LABEL_CHARS),
     question: clamp(said.join("\n"), MAX_QUESTION_CHARS),
     choices,
+    scrolls,
     text: clamp(text.join("\n"), MAX_TEXT_CHARS),
   };
 }
@@ -144,10 +165,21 @@ export function dialogIsReadable(dialog: DialogReading): boolean {
   return dialog.title.trim() !== "" || dialog.question.trim() !== "" || dialog.choices.some((choice) => choice.label !== "");
 }
 
-/** Whether two readings are of the same dialog, which is what says a dialog is still the one on screen. */
+/**
+ * Whether two readings are of the same dialog.
+ *
+ * Not the same window of it: `/rewind` scrolls, so the rows on screen when a card is answered are
+ * routinely not the rows that were on screen when it was raised -- which is how an answer to a
+ * perfectly live dialog came to be dropped as stale. What holds still is the title and what the dialog
+ * says about itself; the rows are only asked to overlap, which two windows of one list do and two
+ * different dialogs sharing a title do not.
+ */
 export function sameDialog(one: DialogReading | null, other: DialogReading | null): boolean {
   if (!one || !other) return false;
-  return one.title === other.title && one.question === other.question && labels(one) === labels(other);
+  if (one.title !== other.title || one.question !== other.question) return false;
+  if (one.choices.length === 0 || other.choices.length === 0) return true;
+  const labels = new Set(one.choices.map((choice) => choice.label));
+  return other.choices.some((choice) => labels.has(choice.label));
 }
 
 /** Whether the marker sits on this row now, which is what answering one waits for. */
@@ -160,10 +192,6 @@ export function dialogTitle(dialog: DialogReading): string {
   const candidates = [dialog.title, dialog.question.split("\n")[0], dialog.text.split("\n").find((line) => line.trim() !== "")];
   const title = candidates.map((value) => value?.trim()).find((value) => value !== undefined && value !== "");
   return title ? clamp(title, MAX_LABEL_CHARS) : "Claude is asking something";
-}
-
-function labels(dialog: DialogReading): string {
-  return dialog.choices.map((choice) => choice.label).join(" ");
 }
 
 /** Where the dialog above `before` starts: the line after the nearest rule across the whole width. */
@@ -187,7 +215,7 @@ function numberedRows(lines: readonly ScreenLine[], markerIndex: number): number
   const rows: number[] = [];
   const numbered = (index: number): boolean => {
     const line = lines[index]?.text;
-    if (line === undefined || FOOTER.test(line)) return false;
+    if (line === undefined || FOOTER.test(line) || SCROLL_INDICATOR.test(line.trim())) return false;
     return NUMBERED.test(withoutMarker(line));
   };
   for (let index = markerIndex - 1; index >= 0 && rows.length < MAX_CHOICES && numbered(index); index -= 1) rows.unshift(index);
@@ -204,7 +232,7 @@ function alignedRows(lines: readonly ScreenLine[], markerIndex: number, column: 
   const rows: number[] = [];
   const aligned = (index: number): boolean => {
     const line = lines[index]?.text;
-    if (line === undefined || FOOTER.test(line) || line.trim() === "") return false;
+    if (line === undefined || FOOTER.test(line) || line.trim() === "" || SCROLL_INDICATOR.test(line.trim())) return false;
     const text = withoutMarker(line);
     return line.length - text.length === column && !BOX_TOP.test(line) && !BOX_BOTTOM.test(line) && !RULE.test(line.trim());
   };

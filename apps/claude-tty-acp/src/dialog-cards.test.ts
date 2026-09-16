@@ -30,6 +30,29 @@ const REWIND_SCREEN: ScreenLine[] = [
   ["   Enter to continue · Esc to cancel", "p246"],
 ].map(([text, colour]) => ({ text: text!, colour: colour! }));
 
+/**
+ * A list longer than the window it is drawn in, as `/rewind` is on a session with a few checkpoints:
+ * three rows on screen, the marker somewhere in them, and a line at each end saying how many more
+ * there are. Moving the marker past an edge scrolls the window, which is what makes a row that was on
+ * screen when the card went up reachable again after it has scrolled away.
+ */
+type ScrollingList = { rows: readonly string[]; marked: number; window?: number };
+
+function scrollingList(rows: readonly string[], marked: number, window = 3): ScreenLine[] {
+  const first = Math.min(Math.max(0, marked - Math.floor((window - 1) / 2)), Math.max(0, rows.length - window));
+  const visible = rows.slice(first, first + window);
+  const lines: Array<[string, string | null]> = [
+    ["▔".repeat(96), "p153"],
+    ["   Rewind", "p153"],
+    ["   Restore the code and/or conversation to the point before…", "default"],
+  ];
+  if (first > 0) lines.push([`    ↑ ${first} more above`, "p246"]);
+  for (const [index, row] of visible.entries()) lines.push([`   ${first + index === marked ? "❯ " : "  "}${row}`, "default"]);
+  if (first + window < rows.length) lines.push([`    ↓ ${rows.length - first - window} more below`, "p246"]);
+  lines.push(["   Enter to continue · Esc to cancel", "p246"]);
+  return lines.map(([text, colour]) => ({ text, colour }));
+}
+
 /** A screen the tests hand over as text, which is what a caller with only the snapshot has. */
 function asLines(screen: string | ScreenLine[]): ScreenLine[] {
   return typeof screen === "string" ? screen.split("\n").map((text) => ({ text, colour: null })) : screen;
@@ -63,7 +86,7 @@ type Harness = {
   interactions: InteractionBridge;
 };
 
-function harness(options: { rows?: number[]; startupScreen?: string } = {}): Harness {
+function harness(options: { rows?: number[]; list?: ScrollingList; startupScreen?: string; answerTimeoutMs?: number } = {}): Harness {
   const permissions: RequestPermissionRequest[] = [];
   const vendor: Array<{ method: string; params: Record<string, unknown> }> = [];
   const keys: DialogKey[] = [];
@@ -97,13 +120,24 @@ function harness(options: { rows?: number[]; startupScreen?: string } = {}): Har
     press: (key) => {
       keys.push(key);
       // Enter takes whatever the marker is on, which is what stops Claude waiting.
-      if (key === "enter") waitingFor = null;
-      else if (options.rows) screen = moveMarker(screen, options.rows, key);
+      if (key === "enter") {
+        waitingFor = null;
+        return;
+      }
+      if (options.rows) screen = moveMarker(screen, options.rows, key);
+      if (options.list) {
+        // A list longer than its window: the marker steps and the window follows it, and neither end
+        // comes round -- which is how Claude's own lists move.
+        const list = options.list;
+        if (key === "up") list.marked = Math.max(0, list.marked - 1);
+        if (key === "down") list.marked = Math.min(list.rows.length - 1, list.marked + 1);
+        screen = scrollingList(list.rows, list.marked, list.window);
+      }
     },
     answeredByStartup: (value) => options.startupScreen !== undefined && value === options.startupScreen,
     pollIntervalMs: 10,
     answerKeyMs: 1,
-    answerTimeoutMs: 50,
+    answerTimeoutMs: options.answerTimeoutMs ?? 50,
     settleMs: 100,
   });
   return {
@@ -252,6 +286,40 @@ test("presses towards the row rather than around the list, whichever way that is
   assert.deepEqual(down.keys, ["down", "enter"]);
 });
 
+test("walks a list that scrolled to the row it was asked for, wherever the window has moved to", async (t) => {
+  // `/rewind` on a session with a few checkpoints: five rows, three of them drawn, the marker at the
+  // end where Claude opens it.
+  const list: ScrollingList = { rows: ["ONE", "TWO", "THREE", "FOUR", "(current)"], marked: 4 };
+  // Walking a list takes longer than stepping across one, which is what the bound is for.
+  const scrolling = harness({ list, answerTimeoutMs: 2_000 });
+  t.after(() => scrolling.watcher.stop());
+  scrolling.setScreen(scrollingList(list.rows, list.marked));
+  scrolling.watcher.start();
+  scrolling.setWaitingFor("dialog open");
+  await waitFor(() => scrolling.permissions.length === 1);
+
+  // The card offers what the window was showing, and says there is more of it.
+  assert.deepEqual(
+    scrolling.permissions[0]!.options.map((option) => option.name),
+    ["Dismiss (Esc)", "THREE", "FOUR", "(current)"],
+  );
+  assert.equal((scrolling.permissions[0]!.toolCall.rawInput as Record<string, unknown>).scrolls, true);
+
+  // Before anybody answers, the list scrolls away from the row that was chosen -- which is what a live
+  // session did in the minute between raising the card and answering it, and what made the answer read
+  // as belonging to a dialog that had gone.
+  list.marked = 0;
+  scrolling.setScreen(scrollingList(list.rows, list.marked));
+  scrolling.answer({ outcome: { outcome: "selected", optionId: "dialog-choice-1" } });
+
+  // The row is nowhere in the window, so the marker is walked until it is drawn again -- one way until
+  // the end of the list, then the other. Claude's lists do not come round, so there is no other way back.
+  await waitFor(() => scrolling.keys.includes("enter") || scrolling.escapes > 0, 4_000);
+  assert.equal(scrolling.escapes, 0);
+  assert.equal(list.rows[list.marked], "FOUR", "the marker ended on the row the card was answered with");
+  // Up first, where there was nothing, then back down to it.
+  assert.deepEqual(scrolling.keys, ["up", "down", "down", "down", "enter"]);
+});
 test("escapes the question when the card is dismissed, and when the row cannot be reached", async (t) => {
   const dismissed = harness();
   t.after(() => dismissed.watcher.stop());
