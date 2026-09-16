@@ -165,6 +165,12 @@ export function withSubagentSessions(
  * lifetime is decided. The adapter closes a launch when the agent reports and when the Claude
  * process it ran in stops, so a session whose process died says so here rather than going on
  * looking busy — which is what the transcript on its own could never tell anybody.
+ *
+ * A launch cancelled with its turn decides nothing. Paseo cancels a turn before it replaces one, so
+ * every message sent while an agent runs terminalizes the launch — the bridge marks it failed with
+ * no error, which the outcome wrapper outside this one repairs to `canceled` — while the agent runs
+ * on in its own loop and the adapter reopens the card as soon as it writes. Only the adapter ends a
+ * launch for real: the agent's report, or a failure carrying the error the adapter wrote for it.
  */
 function trackLaunch(parent: Parent | undefined, item: ProviderTimelineItem): void {
   if (parent === undefined || item.type !== "tool_call") return;
@@ -173,6 +179,7 @@ function trackLaunch(parent: Parent | undefined, item: ProviderTimelineItem): vo
     return;
   }
   parent.running.delete(item.callId);
+  if (item.status === "canceled" || (item.status === "failed" && item.error === null)) return;
   parent.ended.set(item.callId, item.status === "completed" ? "completed" : "failed");
 }
 

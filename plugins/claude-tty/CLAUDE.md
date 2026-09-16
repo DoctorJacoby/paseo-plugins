@@ -262,7 +262,9 @@ Beside each transcript is an `agent-<agent id>.meta.json` carrying `agentType`, 
 
 That id is the whole lifecycle. **The session's own transcript is not read here at all**: a launch left open in it says only that nobody was there to hear the end of it, never that the agent is still working, which is the bug the old panel had.
 The tool call in the session's conversation says it properly, because the adapter closes one when the agent reports *and* when the Claude process it ran in stops, and the wrapper sees every `timeline.item` on its way to the daemon.
-So a child opens while its launch is running and closes when that launch does — completed as a clean finish, anything else with an error, which is what a descriptor can say.
+So a child opens while its launch is running and closes when that launch ends *for real* — completed as a clean finish, a failure carrying the error the adapter wrote as an error, which is what a descriptor can say.
+A launch cancelled with its turn is neither and decides nothing: Paseo cancels a turn before it replaces one, so every message sent while an agent runs terminalizes the launch — the bridge marks it failed with no error, repaired to `canceled` only *outside* this wrapper — while the agent runs on and the adapter reopens the card as soon as it writes.
+Closing the child on that made talking to a session mark its working subagents failed, which was this wrapper's own version of the old panel's bug.
 An agent whose launch has already ended when its transcript is found is history and is skipped; an agent another subagent launched names a `toolUseId` the session's conversation never mentions, so it is skipped too and stays on its spawner's card.
 
 The transcript is read incrementally, the way the adapter reads the session's own, because it runs to megabytes and this polls once a second per open session.

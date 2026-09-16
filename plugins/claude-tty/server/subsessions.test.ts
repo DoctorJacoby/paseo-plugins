@@ -94,7 +94,7 @@ function opened(harness: Harness, sessionId = "session"): void {
   });
 }
 
-function launch(harness: Harness, status: "running" | "completed" | "failed", callId = "toolu_1"): void {
+function launch(harness: Harness, status: "running" | "completed" | "failed" | "canceled", callId = "toolu_1"): void {
   harness.emit({
     type: "timeline.item",
     sessionId: "session",
@@ -105,6 +105,23 @@ function launch(harness: Harness, status: "running" | "completed" | "failed", ca
       name: "Task",
       detail: { type: "plain_text", text: "Explore" },
       ...(status === "failed" ? { status, error: "no" } : { status, error: null }),
+    },
+  });
+}
+
+/** What the bridge makes of a still-open launch when Paseo cancels a turn to replace it. */
+function launchCancelledWithTurn(harness: Harness, callId = "toolu_1"): void {
+  harness.emit({
+    type: "timeline.item",
+    sessionId: "session",
+    item: {
+      id: callId,
+      type: "tool_call",
+      callId,
+      name: "Task",
+      detail: { type: "plain_text", text: "Explore" },
+      status: "failed",
+      error: null,
     },
   });
 }
@@ -175,6 +192,33 @@ test("closes the subsession when the launch that started it ends, and says so wh
   const closed = childEvents(kit).find((event) => event.type === "session.closed");
   assert.equal(closed?.type, "session.closed");
   assert.ok(closed?.type === "session.closed" && closed.error !== undefined);
+  await kit.connection.close();
+});
+
+test("keeps a subsession open across a launch cancelled with its turn, and closes it on the real ending", async () => {
+  const kit = harness();
+  opened(kit);
+  launch(kit, "running");
+  kit.sidecars = [sidecar()];
+  await kit.tick();
+
+  // A message sent while the agent runs: Paseo cancels the turn, the bridge terminalizes the launch
+  // as failed with no error, and the outcome wrapper — outside this one — would repair it to canceled.
+  launchCancelledWithTurn(kit);
+  await kit.tick();
+  assert.equal(childEvents(kit).find((event) => event.type === "session.closed"), undefined);
+
+  // The agent keeps writing, so the adapter reopens the card; a later cancel arrives already repaired.
+  launch(kit, "running");
+  launch(kit, "canceled");
+  await kit.tick();
+  assert.equal(childEvents(kit).find((event) => event.type === "session.closed"), undefined);
+
+  launch(kit, "running");
+  launch(kit, "completed");
+  await kit.tick();
+  const closed = childEvents(kit).find((event) => event.type === "session.closed");
+  assert.ok(closed?.type === "session.closed" && closed.error === undefined);
   await kit.connection.close();
 });
 
