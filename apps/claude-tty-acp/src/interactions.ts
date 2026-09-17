@@ -115,6 +115,27 @@ export class InteractionBridge {
     });
   }
 
+  /**
+   * The files are the whole of the question. "External imports" with nothing named is not something
+   * anybody can say yes to -- what is being approved is a set of paths chosen by whoever wrote the
+   * CLAUDE.md, read into Claude's context as instructions -- so they are read off Claude's own screen
+   * and ride out in the card. The two options are worded as Claude words them, because the person
+   * answering here is answering Claude's dialog through Paseo rather than a question of Paseo's own.
+   */
+  requestExternalImports(imports: string[]): Promise<boolean> {
+    return this.requestConsent({
+      id: "external-imports",
+      title: "Let this project's CLAUDE.md import files from outside it?",
+      details: {
+        imports,
+        warning: "An import is read into Claude's context as instructions, and these files sit outside the workspace, so nothing in this project says what they contain.",
+        effect: "Declining leaves the imports out; the session starts either way.",
+      },
+      accept: { optionId: "allow-external-imports", name: "Yes, allow external imports" },
+      decline: { optionId: "disable-external-imports", name: "No, disable external imports" },
+    });
+  }
+
   requestBypassPermissions(): Promise<boolean> {
     return this.requestConsent({
       id: "bypass-permissions",

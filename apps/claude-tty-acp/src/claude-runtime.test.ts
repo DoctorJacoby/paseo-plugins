@@ -12,6 +12,7 @@ import { StateStore } from "./state-store.ts";
 import { subagentsDirectory } from "./subagent-transcript.ts";
 import { TERMINAL_COLS, TERMINAL_ROWS } from "./terminal-screen.ts";
 import { escapeProjectDirName } from "./transcript-reader.ts";
+import { NOTICE_METHOD } from "./vendor-updates.ts";
 
 /** What the runtime clears Claude's input box with before every paste: Ctrl-U, a key per write, until the box reads empty. */
 const CLEAR_INPUT_LINE = "\u0015";
@@ -402,6 +403,190 @@ test("fails closed when Claude workspace trust is denied", async () => {
   }
 });
 
+const EXTERNAL_IMPORTS = ["/home/node/rbms-legacy-lab/AGENTS.md", "/srv/house-style/CONVENTIONS.md"];
+
+test("asks through ACP before letting a CLAUDE.md import files from outside the workspace", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-imports-test-"));
+  const cwd = "/work/imports";
+  const permissionRequests: RequestPermissionRequest[] = [];
+  let agent!: ClaudeTtyAgent;
+  let spawned: FakePty | null = null;
+  const connection = {
+    sessionUpdate: async () => undefined,
+    requestPermission: async (request: RequestPermissionRequest): Promise<RequestPermissionResponse> => {
+      permissionRequests.push(request);
+      return { outcome: { outcome: "selected", optionId: "allow-external-imports" } };
+    },
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    const sessionId = args[args.indexOf("--session-id") + 1]!;
+    let answered = false;
+    const pty = new FakePty(5700, (data) => {
+      if (data === "[B") setImmediate(() => pty.emitData(externalImportsScreen("allow")));
+      // Claude reads the CLAUDE.md, and so reaches its SessionStart hook, only once this is answered.
+      if (data === "\r" && !answered) {
+        answered = true;
+        setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+      }
+    });
+    spawned = pty;
+    setImmediate(() => pty.emitData(externalImportsScreen("disable")));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(connection, {
+    spawnPty,
+    runtimeRoot,
+    stateDirectory: path.join(runtimeRoot, "state"),
+    startupTimeoutMs: 500,
+    readinessTimeoutMs: 0,
+    submitDelayMs: 0,
+    contextRefreshTimeoutMs: 0,
+    clearInputKeyMs: 0,
+    externalImportsKeyDelayMs: 0,
+    externalImportsSelectionTimeoutMs: 50,
+  });
+
+  try {
+    const session = await agent.newSession({ cwd, mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }] });
+    await waitFor(() => permissionRequests.length === 1 && spawned !== null && spawned.writes.length === 4);
+    assert.equal(permissionRequests[0]!.toolCall.title, "Let this project's CLAUDE.md import files from outside it?");
+    // The files are the question, so the card has to carry the ones Claude listed rather than the words around them.
+    assert.deepEqual((permissionRequests[0]!.toolCall.rawInput as { imports?: string[] }).imports, EXTERNAL_IMPORTS);
+    assert.deepEqual(permissionRequests[0]!.options, [
+      { optionId: "disable-external-imports", name: "No, disable external imports", kind: "reject_once" },
+      { optionId: "allow-external-imports", name: "Yes, allow external imports", kind: "reject_once" },
+    ]);
+    assert.deepEqual((spawned as unknown as FakePty).writes, ["[B", "\r", "[200~hello [201~", "\r"]);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+  } finally {
+    await agent.close();
+    await rm(runtimeRoot, { force: true, recursive: true });
+  }
+});
+
+// The one consent card a refusal does not fail the start on: Claude runs without the imports, and a
+// session that runs is worth more than the files it was refused.
+test("starts without the external imports, and says so, when the card is declined", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-imports-declined-test-"));
+  const vendor: Array<{ method: string; params: Record<string, unknown> }> = [];
+  let agent!: ClaudeTtyAgent;
+  let spawned: FakePty | null = null;
+  const connection = {
+    sessionUpdate: async () => undefined,
+    requestPermission: async (): Promise<RequestPermissionResponse> => ({ outcome: { outcome: "selected", optionId: "disable-external-imports" } }),
+    extNotification: async (method: string, params: Record<string, unknown>) => {
+      vendor.push({ method, params });
+    },
+  } as unknown as AgentSideConnection;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    const sessionId = args[args.indexOf("--session-id") + 1]!;
+    let answered = false;
+    const pty = new FakePty(5800, (data) => {
+      if (data === "\r" && !answered) {
+        answered = true;
+        setImmediate(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }));
+      }
+    });
+    spawned = pty;
+    setImmediate(() => pty.emitData(externalImportsScreen("disable")));
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(connection, {
+    spawnPty,
+    runtimeRoot,
+    stateDirectory: path.join(runtimeRoot, "state"),
+    startupTimeoutMs: 500,
+    readinessTimeoutMs: 0,
+    submitDelayMs: 0,
+    contextRefreshTimeoutMs: 0,
+    clearInputKeyMs: 0,
+    externalImportsKeyDelayMs: 0,
+    externalImportsSelectionTimeoutMs: 50,
+  });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/imports-declined", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }] });
+    await waitFor(() => spawned !== null && spawned.writes.length === 3);
+    // Claude's own marker starts on No, so the refusal is confirmed where it stands and no row is walked.
+    assert.deepEqual((spawned as unknown as FakePty).writes, ["\r", "[200~hello [201~", "\r"]);
+    assert.equal((spawned as unknown as FakePty).killed, false);
+    const notice = vendor.find((update) => update.method === NOTICE_METHOD)?.params.notice as { title: string; description: string } | undefined;
+    assert.equal(notice?.title, "External CLAUDE.md imports are disabled for this session");
+    // Which files the session is missing, or the notice explains nothing anybody can act on.
+    for (const file of EXTERNAL_IMPORTS) assert.ok(notice?.description.includes(file), `notice names ${file}`);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+  } finally {
+    await agent.close();
+    await rm(runtimeRoot, { force: true, recursive: true });
+  }
+});
+
+// Claude answers its own dialogs sometimes -- a remembered project, a key that arrived from somewhere
+// else -- and the answer this side was given is then about a question nobody is asking.
+test("presses nothing when Claude's external-imports question goes before the card is answered", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-imports-gone-test-"));
+  const vendor: Array<{ method: string; params: Record<string, unknown> }> = [];
+  let agent!: ClaudeTtyAgent;
+  let spawned: FakePty | null = null;
+  let asked = false;
+  const connection = {
+    sessionUpdate: async () => undefined,
+    requestPermission: async (): Promise<RequestPermissionResponse> => {
+      asked = true;
+      // Claude has moved on by the time the answer comes back, which is the whole of this case.
+      spawned?.emitData(freshModeScreen("auto mode on"));
+      return { outcome: { outcome: "selected", optionId: "disable-external-imports" } };
+    },
+    extNotification: async (method: string, params: Record<string, unknown>) => {
+      vendor.push({ method, params });
+    },
+  } as unknown as AgentSideConnection;
+  const spawnPty = (_file: string, args: string[]): Pick<IPty, "pid" | "write" | "kill" | "onData" | "onExit"> => {
+    const sessionId = args[args.indexOf("--session-id") + 1]!;
+    const pty = new FakePty(5900);
+    spawned = pty;
+    setImmediate(() => {
+      pty.emitData(externalImportsScreen("disable"));
+      setTimeout(() => void agent.hooks.dispatch({ hook_event_name: "SessionStart", session_id: sessionId }), 50);
+    });
+    return pty;
+  };
+  agent = new ClaudeTtyAgent(connection, {
+    spawnPty,
+    runtimeRoot,
+    stateDirectory: path.join(runtimeRoot, "state"),
+    startupTimeoutMs: 1_000,
+    readinessTimeoutMs: 0,
+    submitDelayMs: 0,
+    contextRefreshTimeoutMs: 0,
+    clearInputKeyMs: 0,
+    externalImportsKeyDelayMs: 0,
+    externalImportsSelectionTimeoutMs: 50,
+  });
+
+  try {
+    const session = await agent.newSession({ cwd: "/work/imports-gone", mcpServers: [] });
+    const turn = agent.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: "hello" }] });
+    await waitFor(() => spawned !== null && spawned.writes.length === 2, 3_000);
+    // The dialog was recognised and carded; what follows is about what became of the answer.
+    assert.equal(asked, true);
+    // Only the prompt: an Enter sent at a dialog that has gone lands wherever Claude is now.
+    assert.deepEqual((spawned as unknown as FakePty).writes, ["[200~hello [201~", "\r"]);
+    // And nothing is claimed about a session whose answer the adapter never gave.
+    assert.deepEqual(vendor.filter((update) => update.method === NOTICE_METHOD), []);
+    await agent.hooks.dispatch({ hook_event_name: "Stop", session_id: session.sessionId, last_assistant_message: "done" });
+    assert.deepEqual(await turn, { stopReason: "end_turn" });
+  } finally {
+    await agent.close();
+    await rm(runtimeRoot, { force: true, recursive: true });
+  }
+});
+
 test("applies native model and mode controls and restarts an idle session", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runtime-test-"));
   const spawns: SpawnRecord[] = [];
@@ -732,6 +917,23 @@ function workspaceTrustScreen(cwd: string): string {
     "Security guide",
     "❯ No, exit",
     "  Yes, I trust this folder",
+    "Enter to confirm · Esc to cancel",
+  ].join("\r\n");
+}
+
+/** Claude's external-imports question, as captured from a session that stopped at one. */
+function externalImportsScreen(selected: "disable" | "allow"): string {
+  return [
+    "[2J[H",
+    "Allow external CLAUDE.md file imports?",
+    "This project's CLAUDE.md imports files outside the current working directory. Never allow this for third-party",
+    "repositories.",
+    "External imports:",
+    ...EXTERNAL_IMPORTS.map((file) => `  ${file}`),
+    "Important: Only use Claude Code with files you trust. Accessing untrusted files may pose security risks",
+    "https://code.claude.com/docs/en/security",
+    selected === "disable" ? "❯ No, disable external imports" : "  No, disable external imports",
+    selected === "disable" ? "    Yes, allow external imports" : "❯ Yes, allow external imports",
     "Enter to confirm · Esc to cancel",
   ].join("\r\n");
 }

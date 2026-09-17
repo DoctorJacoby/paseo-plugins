@@ -139,6 +139,10 @@ Startup is complete once the `SessionStart` hook has arrived and Claude's intera
 If Claude stops first at its workspace-trust screen, the adapter surfaces the exact cwd as an ACP permission card in Paseo.
 Approving the card selects **Yes, I trust this folder** in the PTY and gives Claude a fresh startup window; denying or cancelling it fails closed without changing Claude's trust state.
 
+A project whose CLAUDE.md `@`-imports a file from outside the working directory stops at a second question of the same kind — **Allow external CLAUDE.md file imports?** — and it is carded too, with the paths Claude listed in it: an import is read into Claude's context as instructions, and "external imports" with nothing named is not something anybody can approve.
+Refusing this one does not fail the start, because **No, disable external imports** is a session that runs without those files — so a refusal takes it, and a notice in the session's timeline names the files that were left out.
+An unanswered card lands there too, and that is half the point of the choice: an unattended session comes up on the safe side rather than sitting at a dialog until the handshake times out.
+
 Readiness also requires the screen to have stopped changing, and that is not a nicety.
 A resumed session paints its entire conversation before its input box exists, and text inside that conversation can satisfy every readiness signal on its own — a footer quoted in a message, a token count, the words `auto mode on`.
 A prompt pasted into that window is dropped, and the paste then never echoes -- which is the one thing the submit loop reads, and now what it refuses to proceed without.
@@ -289,7 +293,7 @@ That last one is the easiest to leave behind and the worst to: Paseo goes on sho
 ACP has no way to withdraw a permission request — the agent asks and waits, and only the client ever ends one — so the plugin answers it on the daemon's side, over the same vendor channel the tool-call mirror uses.
 A question closed to deliver a prompt also puts a notice in the session's timeline naming what was closed, since the answer Claude was waiting for would otherwise simply disappear.
 
-What the adapter answers itself is never carded: the workspace trust screen, the bypass disclaimer and the resume question are all on the startup path, and the watcher only starts once that path is behind it.
+What the adapter answers itself is never carded: the workspace trust screen, the bypass disclaimer, the external-imports question and the resume question are all on the startup path, and the watcher only starts once that path is behind it.
 Neither is a wait a hook is already asking about — a permission, an `AskUserQuestion`, a plan — because the card for that is already on screen.
 Every transition into a dialog is logged with the screen it was on, because the list of these grows with every Claude release and the log is how the next one gets read properly.
 
@@ -399,7 +403,8 @@ Filling the real meter needs Paseo's generic ACP provider to honour `usage_updat
 | `Could not start claude` | Set `CLAUDE_BIN` to an absolute executable path visible to the daemon. |
 | Workspace trust permission appears | Approve only when the displayed folder is a project you created or trust; Claude remembers the choice. |
 | Bypass Permissions disclaimer card appears | Claude has not been told this host accepts the mode. Accept it to start the session, or pick another mode; the answer is remembered for the host. |
-| SessionStart handshake timeout | If no workspace trust or Bypass Permissions card appeared, check Claude organization hook policy, inherited settings, loopback access, and the terminal snapshot in the adapter log. |
+| External CLAUDE.md imports card appears | This project's CLAUDE.md imports files from outside the working directory; the card names them. Approve only files you trust — declining starts the session without them and says so in the timeline. |
+| SessionStart handshake timeout | If no workspace trust, Bypass Permissions or external-imports card appeared, check Claude organization hook policy, inherited settings, loopback access, and the terminal snapshot in the adapter log. |
 | Claude opens a login screen | Authenticate as the Paseo daemon user and verify `HOME` or `CLAUDE_CONFIG_DIR`. |
 | Persisted session not found | Select the host that created it and verify `CLAUDE_TTY_ACP_STATE_DIR`. |
 | Session belongs to another cwd | Load it with its original absolute project path. |

@@ -115,6 +115,9 @@ const WORKSPACE_TRUST_SELECTION_TIMEOUT_MS = 3_000;
 // Claude puts its bypass permissions disclaimer up the same way it puts the trust screen up, and it settles no faster.
 const BYPASS_PERMISSIONS_KEY_DELAY_MS = 500;
 const BYPASS_PERMISSIONS_SELECTION_TIMEOUT_MS = 3_000;
+// Claude puts its external-imports question up the same way, and it settles no faster than the other two.
+const EXTERNAL_IMPORTS_KEY_DELAY_MS = 500;
+const EXTERNAL_IMPORTS_SELECTION_TIMEOUT_MS = 3_000;
 // Claude asks how to resume a long or old conversation before it opens one, and answers that dialog the same way it answers the trust screen.
 const STALE_RESUME_KEY_DELAY_MS = 200;
 const STALE_RESUME_SELECTION_TIMEOUT_MS = 3_000;
@@ -164,6 +167,8 @@ export type RuntimeDependencies = {
   workspaceTrustSelectionTimeoutMs?: number;
   bypassPermissionsKeyDelayMs?: number;
   bypassPermissionsSelectionTimeoutMs?: number;
+  externalImportsKeyDelayMs?: number;
+  externalImportsSelectionTimeoutMs?: number;
   staleResumeKeyDelayMs?: number;
   staleResumeSelectionTimeoutMs?: number;
   readyQuietMs?: number;
@@ -208,6 +213,8 @@ export class ClaudeRuntime {
   private readonly workspaceTrustSelectionTimeoutMs: number;
   private readonly bypassPermissionsKeyDelayMs: number;
   private readonly bypassPermissionsSelectionTimeoutMs: number;
+  private readonly externalImportsKeyDelayMs: number;
+  private readonly externalImportsSelectionTimeoutMs: number;
   private readonly staleResumeKeyDelayMs: number;
   private readonly staleResumeSelectionTimeoutMs: number;
   private readonly readyQuietMs: number;
@@ -285,7 +292,8 @@ export class ClaudeRuntime {
       lines: () => this.screen.lines(),
       escape: () => this.pty?.write(ESCAPE),
       press: (key) => this.pty?.write(key === "up" ? CURSOR_UP : key === "down" ? CURSOR_DOWN : ENTER),
-      answeredByStartup: (screen) => isWorkspaceTrustScreen(screen) || isBypassPermissionsScreen(screen) || isStaleResumeScreen(screen),
+      answeredByStartup: (screen) =>
+        isWorkspaceTrustScreen(screen) || isBypassPermissionsScreen(screen) || isExternalImportsScreen(screen) || isStaleResumeScreen(screen),
       ...(dependencies.dialogPollMs === undefined ? {} : { pollIntervalMs: dependencies.dialogPollMs }),
       ...(dependencies.dialogAnswerKeyMs === undefined ? {} : { answerKeyMs: dependencies.dialogAnswerKeyMs }),
       ...(dependencies.dialogAnswerTimeoutMs === undefined ? {} : { answerTimeoutMs: dependencies.dialogAnswerTimeoutMs }),
@@ -305,6 +313,8 @@ export class ClaudeRuntime {
     this.workspaceTrustSelectionTimeoutMs = dependencies.workspaceTrustSelectionTimeoutMs ?? WORKSPACE_TRUST_SELECTION_TIMEOUT_MS;
     this.bypassPermissionsKeyDelayMs = dependencies.bypassPermissionsKeyDelayMs ?? BYPASS_PERMISSIONS_KEY_DELAY_MS;
     this.bypassPermissionsSelectionTimeoutMs = dependencies.bypassPermissionsSelectionTimeoutMs ?? BYPASS_PERMISSIONS_SELECTION_TIMEOUT_MS;
+    this.externalImportsKeyDelayMs = dependencies.externalImportsKeyDelayMs ?? EXTERNAL_IMPORTS_KEY_DELAY_MS;
+    this.externalImportsSelectionTimeoutMs = dependencies.externalImportsSelectionTimeoutMs ?? EXTERNAL_IMPORTS_SELECTION_TIMEOUT_MS;
     this.staleResumeKeyDelayMs = dependencies.staleResumeKeyDelayMs ?? STALE_RESUME_KEY_DELAY_MS;
     this.staleResumeSelectionTimeoutMs = dependencies.staleResumeSelectionTimeoutMs ?? STALE_RESUME_SELECTION_TIMEOUT_MS;
     this.readyQuietMs = dependencies.readyQuietMs ?? READY_QUIET_MS;
@@ -1236,6 +1246,7 @@ export class ClaudeRuntime {
     let deadline = Date.now() + this.startupTimeoutMs;
     let trustHandled = false;
     let bypassHandled = false;
+    let externalImportsHandled = false;
     while (true) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error(this.startupTimeoutMessage());
@@ -1258,6 +1269,13 @@ export class ClaudeRuntime {
         if (!accepted) throw new Error("Claude asks for the Bypass Permissions disclaimer before it will start in that mode, and it was not accepted in Paseo.");
         await this.acceptBypassPermissions();
         // As with workspace trust: the window that was running covered a handshake, not a person reading a warning.
+        deadline = Date.now() + this.startupTimeoutMs;
+        continue;
+      }
+      if (!externalImportsHandled && isExternalImportsScreen(this.screen.snapshot())) {
+        externalImportsHandled = true;
+        await this.answerExternalImports();
+        // Same reason again: a person was reading a list of paths, not a handshake that was slow.
         deadline = Date.now() + this.startupTimeoutMs;
         continue;
       }
@@ -1290,6 +1308,59 @@ export class ClaudeRuntime {
     if (answer === "stuck") {
       throw new Error(`Claude did not select "Yes, I accept" on its Bypass Permissions disclaimer after it was accepted in Paseo. Terminal output:\n${this.screen.snapshot()}`);
     }
+  }
+
+  /**
+   * Claude asks whether this project's CLAUDE.md may reach outside the workspace for the files it
+   * `@`-imports, and that is the same kind of question as the trust screen: an import is read into
+   * Claude's context as instructions, the files are chosen by whoever wrote the CLAUDE.md, and no
+   * default the adapter could pick would be answering for anybody. So it goes to Paseo as a card, with
+   * the paths Claude listed in it.
+   *
+   * Refusing is where this parts company with workspace trust. Trust is the session -- Claude exits
+   * without it, so a denial fails the start -- but this dialog's No is a session that runs with the
+   * imports left out. So a refusal takes that and carries on: a person who said no has said what they
+   * want, and failing the start on top of it would refuse them the session as well. A card nobody
+   * answers lands there too, which is half the reason for choosing it -- an unattended session comes up
+   * on the safe side rather than sitting at a dialog until the handshake times out.
+   *
+   * What the session loses is not left silent. The notice puts the refusal and the files in the
+   * timeline, because a Claude missing the instructions its CLAUDE.md promised is otherwise a session
+   * behaving oddly for no visible reason.
+   */
+  private async answerExternalImports(): Promise<void> {
+    const imports = externalImportPaths(this.screen.snapshot());
+    const allowed = await this.interactions.requestExternalImports(imports);
+    const option = allowed ? "Yes, allow external imports" : "No, disable external imports";
+    const answer = await this.answerStartupMenu({
+      onScreen: isExternalImportsScreen,
+      selected: allowed ? isExternalImportsAllowed : isExternalImportsDisabled,
+      keyDelayMs: this.externalImportsKeyDelayMs,
+      timeoutMs: this.externalImportsSelectionTimeoutMs,
+      exited: "Claude exited before its external-imports question could be answered",
+    });
+    // The question is gone and Claude is starting on an answer the adapter did not give, which for this
+    // one is a session either way: it has the imports or it has not, and which is not on screen to read.
+    if (answer === "gone") {
+      writeLog({ level: "warn", message: "Claude's external-imports question was answered before the adapter could take it", sessionId: this.sessionId });
+      return;
+    }
+    // Stuck is the dialog still standing, and Claude completes no handshake behind one, so the start is
+    // lost whatever this says. An error naming the option beats waiting out the startup window for it.
+    if (answer === "stuck") {
+      throw new Error(`Claude did not select "${option}" on its external-imports question after it was answered in Paseo. Terminal output:\n${this.screen.snapshot()}`);
+    }
+    writeLog({ level: "info", message: "Answered Claude's external-imports question", sessionId: this.sessionId, allowed, imports });
+    if (allowed) return;
+    await sendNotice(this.connection, this.sessionId, {
+      id: `external-imports-${randomUUID()}`,
+      severity: "warning",
+      title: "External CLAUDE.md imports are disabled for this session",
+      description: [
+        "This project's CLAUDE.md imports files from outside the workspace, and that was not approved, so Claude started without them.",
+        ...(imports.length > 0 ? [`Left out:\n${imports.map((file) => `- ${file}`).join("\n")}`] : []),
+      ].join("\n\n"),
+    });
   }
 
   private async confirmWorkspaceTrust(): Promise<void> {
@@ -1427,6 +1498,57 @@ function isWorkspaceTrustScreen(screen: string): boolean {
     /Yes,\s*I trust this folder/i.test(screen) &&
     /Enter to confirm/i.test(screen)
   );
+}
+
+/**
+ * Claude puts this up before it reads a CLAUDE.md that `@`-imports anything outside the working
+ * directory, and it comes *before* the SessionStart hook, so a session whose project has one never
+ * started at all until the startup loop learned to recognise it.
+ *
+ * The phrases are joined with `\s+` rather than spaces because a snapshot is a screen: Claude wraps its
+ * own sentences at the terminal width, and the question and the two options are all long enough to land
+ * with a newline inside them on a narrower one than this adapter asks for.
+ */
+function isExternalImportsScreen(screen: string): boolean {
+  return (
+    /Allow\s+external\s+CLAUDE\.md\s+file\s+imports\?/i.test(screen) &&
+    /External\s+imports:/i.test(screen) &&
+    /No,\s*disable\s+external\s+imports/i.test(screen) &&
+    /Yes,\s*allow\s+external\s+imports/i.test(screen) &&
+    /Enter to confirm/i.test(screen)
+  );
+}
+
+function isExternalImportsAllowed(screen: string): boolean {
+  return /(?:^|\n)[ \t]*❯[ \t]*Yes,[ \t]*allow external imports[ \t]*(?:$|\n)/i.test(screen);
+}
+
+/** Where Claude's own marker starts, so a refusal is confirmed without moving it. */
+function isExternalImportsDisabled(screen: string): boolean {
+  return /(?:^|\n)[ \t]*❯[ \t]*No,[ \t]*disable external imports[ \t]*(?:$|\n)/i.test(screen);
+}
+
+/**
+ * The files Claude lists under `External imports:`, which are the whole of what the card is asking
+ * about. Read by walking down from that heading for as long as the lines look like paths, because the
+ * list has no closing line of its own -- what follows it is the `Important:` warning and Claude's
+ * security link, and neither of those begins the way a path does.
+ *
+ * A path longer than the screen is wide is the one thing this reads short: Claude wraps it, and the
+ * continuation stops the walk rather than joining the line above. The card is then missing a tail, not
+ * a file, so the person still sees which import they are being asked about.
+ */
+function externalImportPaths(screen: string): string[] {
+  const lines = screen.split("\n");
+  const heading = lines.findIndex((line) => /^\s*External\s+imports:/i.test(line));
+  if (heading < 0) return [];
+  const paths: string[] = [];
+  for (const line of lines.slice(heading + 1)) {
+    const text = line.trim();
+    if (!/^[~/.]/.test(text)) break;
+    paths.push(text);
+  }
+  return paths;
 }
 
 /**
