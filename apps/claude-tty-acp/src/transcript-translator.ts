@@ -157,6 +157,8 @@ export class TranscriptTranslator {
   private readonly stoppedTasksByToolCall = new Map<string, string>();
   /** The diff each edit's tool call carried, until its result has sent it again. */
   private readonly diffsByToolCall = new Map<string, ToolCallContent[]>();
+  /** The nested agents' reports already written onto a spawner's card, because one notification is delivered many times over. */
+  private readonly notedNestedReports = new Set<string>();
   private lastSubagentActivity = 0;
   private lastBackgroundShellActivity = 0;
   private lastAssistantActivity = 0;
@@ -488,11 +490,41 @@ export class TranscriptTranslator {
       notification.taskId ??
       (notification.toolCallId === null ? null : this.subagentsByToolCall.get(notification.toolCallId) ?? null);
     const card = agentId === null ? undefined : this.subagents.get(agentId);
-    if (card === undefined || card.status !== "in_progress") return;
+    if (card === undefined || agentId === null || card.status !== "in_progress") return;
+    // A nested agent's report is written into *this* session's transcript rather than its spawner's,
+    // and the card it resolves through is the spawner's, shared with it by the adoption. Settling
+    // that card on it would call the spawner finished at the very moment it is being woken to carry
+    // on -- the report is what wakes it -- and would take its transcript out of the watcher's reading
+    // with it, leaving the card saying "completed" for however many hours the spawner still had to
+    // run, and the turn free to end on a session that is still working. So it is a step and no more.
+    if (card.agentId !== agentId) {
+      await this.noteNestedReport(card, agentId, notification);
+      return;
+    }
     card.status = notificationFailed(notification.status) ? "failed" : "completed";
     card.outstanding = false;
     this.lastSubagentActivity = Date.now();
     card.log.append(notification.summary ?? `Agent ${notification.status ?? "finished"}`);
+    await this.publishSubagent(card);
+  }
+
+  /**
+   * Puts a nested agent's report on the card it shares with its spawner, and counts it as the
+   * spawner working: the spawner writes again as soon as it has read the report, and a hold that
+   * ran its bound out in between would end the turn with all of that still to come.
+   *
+   * Deduplicated by the line itself, keyed to the agent and the call that launched it, because one
+   * notification is written many times over and none of the repeats is news. What that cannot tell
+   * apart is a nested agent messaged back into work that then finishes again saying exactly what it
+   * said the first time, which costs the repeat its line and nothing else.
+   */
+  private async noteNestedReport(card: SubagentCard, agentId: string, notification: TaskNotification): Promise<void> {
+    const line = `↳ ${notification.summary ?? `Agent ${notification.status ?? "finished"}`}`;
+    const key = `${agentId}:${notification.toolCallId ?? ""}:${line}`;
+    if (this.notedNestedReports.has(key)) return;
+    this.notedNestedReports.add(key);
+    this.lastSubagentActivity = Date.now();
+    card.log.append(line);
     await this.publishSubagent(card);
   }
 

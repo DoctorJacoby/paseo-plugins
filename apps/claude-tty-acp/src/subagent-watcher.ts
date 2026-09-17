@@ -30,8 +30,8 @@ export class SubagentWatcher {
   private readonly cwd: string;
   private readonly pollIntervalMs: number;
   private readonly readers = new Map<string, TranscriptReader>();
-  /** Agents already read to the end, so discovering their files again does not reopen them. */
-  private readonly finished = new Set<string>();
+  /** Agents read to the end of what they had to say, whose readers are kept for their offset rather than for the reading. */
+  private readonly parked = new Set<string>();
   private lastPoll = 0;
   private closed = false;
 
@@ -50,15 +50,20 @@ export class SubagentWatcher {
     this.lastPoll = now;
     await this.discover();
     for (const [agentId, reader] of [...this.readers]) {
+      // A settled agent's transcript is not read at all: a session that runs hundreds of them would
+      // otherwise go on stat'ing every finished one five times a second for the rest of its life.
+      // Its reader is parked rather than dropped, because it holds how far into the file this has
+      // read and an agent can be put back to work -- a message sent to one reopens its card, and a
+      // reader starting again from the top would put every step it ever took on that card twice.
+      if (this.parked.has(agentId)) {
+        if (this.sink.subagentSettled(agentId)) continue;
+        this.parked.delete(agentId);
+      }
       const { records } = await reader.read().catch(() => ({ records: [] as TranscriptRecord[] }));
       if (records.length > 0) await this.sink.translateSubagent(agentId, records);
-      // The read above is the last one an agent that has reported needs. A session that runs
-      // hundreds of them would otherwise go on stat'ing every finished transcript five times a
-      // second for the rest of its life.
-      if (this.sink.subagentSettled(agentId)) {
-        this.readers.delete(agentId);
-        this.finished.add(agentId);
-      }
+      // The read above is the last one an agent that has reported needs, so whatever it wrote on the
+      // way out is on the card before its transcript is set aside.
+      if (this.sink.subagentSettled(agentId)) this.parked.add(agentId);
     }
   }
 
@@ -87,7 +92,7 @@ export class SubagentWatcher {
     }
     for (const name of names.sort()) {
       const agentId = agentIdFromFileName(name);
-      if (agentId === null || this.readers.has(agentId) || this.finished.has(agentId)) continue;
+      if (agentId === null || this.readers.has(agentId)) continue;
       this.readers.set(agentId, new TranscriptReader(agentId, this.cwd, { filePath: path.join(this.directory, name) }));
     }
   }

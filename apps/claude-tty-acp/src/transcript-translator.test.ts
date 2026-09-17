@@ -427,6 +427,93 @@ test("carries a nested subagent's earlier steps onto the card of the agent that 
   ]);
 });
 
+test("keeps a spawner's card working when the agent it nested reports, and closes it on its own", async () => {
+  const notifications: SessionNotification[] = [];
+  const connection = {
+    sessionUpdate: async (notification: SessionNotification) => {
+      notifications.push(notification);
+    },
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
+  const translator = new TranscriptTranslator("session", "/work/repo", connection);
+  // Claude writes the tool-use id of the call inside the *spawner's* transcript, which this session has never seen.
+  const nested =
+    '<task-notification><task-id>nested</task-id><tool-use-id>nested-call</tool-use-id><status>completed</status><summary>Agent "Review the branch" finished</summary></task-notification>';
+
+  translator.trackBackgroundWork();
+  await translator.translate([
+    {
+      type: "assistant",
+      uuid: "launcher",
+      message: { content: [{ type: "tool_use", id: "agent-tool", name: "Agent", input: { description: "Ship the MR" } }] },
+    },
+    {
+      type: "user",
+      uuid: "launched",
+      toolUseResult: { isAsync: true, status: "async_launched", agentId: "spawner" },
+      message: { content: [{ type: "tool_result", tool_use_id: "agent-tool", content: [] }] },
+    },
+  ]);
+  await translator.translateSubagent("spawner", [
+    { type: "assistant", uuid: "s1", message: { content: [{ type: "text", text: "Handing the diff to a reviewer" }] } },
+    { type: "user", uuid: "s2", toolUseResult: { isAsync: true, status: "async_launched", agentId: "nested" }, message: { content: [] } },
+  ]);
+  assert.equal(translator.runningSubagents, 1);
+
+  // A nested agent's report is delivered into this session's transcript, and resolves onto the card it shares with its spawner.
+  notifications.length = 0;
+  const workingAt = translator.subagentActivityAt;
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await translator.translate([{ type: "user", uuid: "nested-notified", message: { content: nested } }]);
+
+  // The spawner is still working — this report is what wakes it — so the card stays open, its
+  // transcript stays worth reading, and the turn goes on waiting for it.
+  assert.equal(translator.runningSubagents, 1);
+  assert.equal(translator.subagentSettled("spawner"), false);
+  assert.ok(translator.subagentActivityAt > workingAt, "a nested report is the spawner being woken");
+  assert.equal(notifications.length, 1);
+  const noted = notifications[0]?.update;
+  assert.ok(noted?.sessionUpdate === "tool_call_update");
+  assert.equal(noted.status, "in_progress");
+  assert.deepEqual(noted.content, [
+    { type: "content", content: { type: "text", text: 'Handing the diff to a reviewer\n↳ Agent "Review the branch" finished' } },
+  ]);
+
+  // The queue rewrites the notification at every turn boundary it survives, and none of the repeats is a second report to stack onto the card.
+  notifications.length = 0;
+  await translator.translate([
+    { type: "user", uuid: "nested-again", message: { content: nested } },
+    { type: "attachment", uuid: "nested-queued", attachment: { type: "queued_command", commandMode: "task-notification", prompt: nested } },
+  ]);
+  assert.equal(notifications.length, 0);
+
+  // The spawner's own report is the one that closes its card.
+  await translator.translate([
+    {
+      type: "user",
+      uuid: "notified",
+      message: {
+        content:
+          '<task-notification><task-id>spawner</task-id><status>completed</status><summary>Agent "Ship the MR" finished</summary></task-notification>',
+      },
+    },
+  ]);
+  assert.equal(translator.runningSubagents, 0);
+  assert.equal(translator.subagentSettled("spawner"), true);
+  const closed = notifications.at(-1)?.update;
+  assert.ok(closed?.sessionUpdate === "tool_call_update");
+  assert.equal(closed.status, "completed");
+  assert.deepEqual(closed.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: 'Handing the diff to a reviewer\n↳ Agent "Review the branch" finished\nAgent "Ship the MR" finished',
+      },
+    },
+  ]);
+});
+
 test("counts the agents a turn is still waiting on, and ignores the ones history only remembers", async () => {
   const connection = { sessionUpdate: async () => undefined, extNotification: async () => undefined } as unknown as AgentSideConnection;
   const translator = new TranscriptTranslator("session", "/work/repo", connection);
