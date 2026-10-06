@@ -22,6 +22,15 @@ import { toolCallDetails } from "./tool-details.ts";
  */
 const INITIAL_COMMANDS_TIMEOUT_MS = 10_000;
 
+/**
+ * How long the adapter gets to answer `initialize`. The SDK's default is 10s, which a bare adapter
+ * meets easily, but `adapterExecutable` can name a launcher that does real work before the adapter
+ * starts — starting a container for the workspace, say — and on a loaded machine that alone can eat
+ * the whole default. Missing it fails the session's first message, and the shutdown that follows
+ * can report a different error that hides this one.
+ */
+const STARTUP_TIMEOUT_MS = 60_000;
+
 /** Read from the plugin directory and sanitised by the daemon when the plugin starts. */
 const PROVIDER_ICON = "icon.svg";
 
@@ -70,7 +79,11 @@ export function claudeTtyProvider(settings: Settings, snapshot: SettingsMirror):
         id: PROVIDER_ID,
         label: PROVIDER_LABEL,
         command: adapterCommand(adapter.executable),
-        acpOptions: { waitForInitialCommands: true, initialCommandsTimeoutMs: INITIAL_COMMANDS_TIMEOUT_MS },
+        acpOptions: {
+          startupTimeoutMs: STARTUP_TIMEOUT_MS,
+          waitForInitialCommands: true,
+          initialCommandsTimeoutMs: INITIAL_COMMANDS_TIMEOUT_MS,
+        },
         transformers: [details.transformer, notices.transformer],
       }).connect(request);
       // The steer fallback goes innermost, because it stands in for the bridge. The notices go next:
