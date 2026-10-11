@@ -1,129 +1,137 @@
 # Guided Review
 
-A trunk-first guide to a pull request, with a draft review built alongside it. Paste a GitHub pull request or GitLab merge request URL, and the plugin prepares a Paseo workspace checked out at it, with a **Guided Review** panel in it.
-
-## Screenshots
-
-_None yet._
+Read a GitHub pull request or GitLab merge request as a guide that starts from the foundations, and build your draft review alongside it.
+Each review gets its own Paseo workspace, checked out at the change, with a **Guided Review** panel in it.
 
 ## Installation
+
+Requires:
+
+- Paseo 0.11 or newer
+- `pnpm` on the daemon's `PATH`
+- Either or both:
+  - [`gh`](https://cli.github.com/), logged in with `gh auth login`, to review pull requests on github.com; GitHub Enterprise is not supported
+  - [`glab`](https://gitlab.com/gitlab-org/cli), logged in with `glab auth login`, to review GitLab merge requests on gitlab.com or a self-hosted GitLab
 
 ```sh
 paseo plugin add github:sleeyax/paseo-plugins:plugins/guided-review
 ```
 
-Paseo tracks the default branch from there, so `paseo plugin update guided-review` picks up new releases without a clone, and `paseo plugin update guided-review --check` says what is installed against what is available.
+Update with `paseo plugin update guided-review`.
+To install from source, see the [root README](../../README.md#from-source).
 
-Install and update both run `pnpm install --frozen-lockfile` first, from the manifest's `build` commands, for Paseo's syntax highlighter, which the plugin colours diffs with; so the plugin needs `pnpm` on the daemon's `PATH`. A failing build is reported and the installed version is left running. Installing from a clone works too; run `pnpm install --frozen-lockfile` in it first, since a directory installation runs no build.
+## Usage
 
-The plugin reads pull requests through [`gh`](https://cli.github.com/) and merge requests through [`glab`](https://gitlab.com/gitlab-org/cli), with the logins they already have, so run `gh auth login` or `glab auth login` on the daemon's host first. GitLab works on gitlab.com and on any self-hosted host `glab` is logged in to; the plugin checks with `glab auth status --hostname <host>` before it calls a host, and turns down a merge request URL on any other.
+### Start a review
 
-The plugin runs `glab` without `PASEO_AGENT_ID` and `GITLAB_BOT_IDENTITY` in its environment, so a `glab` wrapper that switches to a bot account for agents still reads and reviews as you.
+1. Select **Guided Review** in the sidebar.
+2. Select **New review** and paste a pull request or merge request URL, or several, one per line.
+3. Select **Start review**, or press Ctrl+Enter (Cmd+Enter on a Mac).
 
-To start a review, select **Guided Review** in the sidebar, then **New review**, paste the URL and select **Start review** (or press Ctrl+Enter, Cmd+Enter on a Mac). To start several at once, paste one URL per line; the button then says how many it starts. The plugin reads each pull request or merge request, creates a workspace checked out at its head, and has its guide generated there, without opening anything, so you can line up several and read them once they are ready. A URL the plugin turns down stays in the box with the reason under it. A review started this way shows how it is going above the list below while the list does not show it, whether or not you are its reviewer, and offers **Open** once its workspace is ready, until you close it with **×** or leave the page.
+The plugin prepares a workspace for each review and has a guide agent write the guide there.
+The workspace belongs to the Paseo project whose `origin` is the repository under review.
+When you have none, the plugin clones the repository once into `$PASEO_HOME/plugin-data/guided-review/clones/`, which then shows up as a Paseo project of its own.
+Nothing opens on its own, so you can start several and read them once they are ready.
+Select **Open** when a review is ready.
 
-**Assigned to me for review** lists the open pull requests and merge requests you are a reviewer of, so you can pick one instead of pasting its URL. On GitHub that is every pull request you are asked to review, directly or through a team, and every open one you were asked to review, by name or through any team, reviewed, and were not asked to review again, so a review you left unasked is not listed; on GitLab it is every open merge request with you among its reviewers, on every host `glab auth status --all` reports. Each row shows where you stand (requested, commented, changes requested, approved, or an approval GitLab reset), marked **updated since** when commits were pushed after your review, and what you have here: the guide's state, whether its head moved, and your pending drafts, which on GitLab are counted only for merge requests you reviewed in the plugin. Each row's number links to it on the forge; select **Review** to start its review the same way as a pasted URL, which you can do on several rows without waiting for any, each showing how its start and guide go. **Open** opens the panel of a review whose workspace is open, and **Continue**, for one whose workspace was closed, starts it again and opens its panel once it is ready. A review workspace you open some other way, such as from Paseo's sidebar, may show only the guide agent's tab, since nothing opened the panel in it yet; select the **Guided Review** button in the workspace's header to open it. The list can show only GitHub or GitLab, only the states you pick under **States**, whose button names them (all but approved by default; pick only requested to see what you have not reviewed yet), hide drafts, keep only what needs your attention, and search by title, project, author or number; select the **Updated**, **Created** or **Size** heading to sort by it, again to reverse it, and **Columns** to choose what the table shows, size and CI among them. Above the rows it says how many it shows, out of how many when a filter or the search hides some, and how many checked-off reviews it leaves out. The **Guided Review** row in the sidebar shows how many reviews need your attention, whatever filters you picked: those you were never asked about yet, asked about again, whose approval GitLab reset, or pushed to since your review, leaving out what you approved or checked off. It lists them once when Paseo opens, then counts what the list last listed, so it catches up when you open the list or select **Refresh**.
+To guide the branch you already have checked out, choose **Guided Review: guide this branch's PR/MR** in the Command Center, or select **Guide this branch's PR/MR** in an empty **Guided Review** panel.
+If your branch is clean and behind the PR/MR, the plugin fast-forwards it and writes the guide in your workspace.
+Otherwise it leaves your branch alone and uses a new workspace.
 
-To set aside a review that waits on someone else while the forge still lists it as yours, such as one you are leaving open for a colleague to try, tick its box in the first column; the forge is not told. It is hidden from then on, unless you pick **With checked off**, or **Checked off only** to see nothing else, and comes back by itself when commits are pushed to it, when you are asked to review it again, or when GitLab resets your approval, but not when you or someone else only comments. Untick the box to bring it back yourself. A row you tick or untick stays in place, dimmed, until you refresh, filter or search the list. The column is on by default; if you chose your columns before it existed, turn on **Checked off** under **Columns**. Check-offs are kept on the daemon, and dropped once the review leaves the list.
+### Pick from your review requests
 
-The plugin keeps those choices on the daemon, so every client of it shows the list the same way. It lists GitHub's pull requests 50 at a time per search and GitLab's 100 per host, and says when a host has more; **Refresh** lists them again. Listing GitLab needs GitLab 19.2 or newer, and GitHub Enterprise hosts are not listed, as the plugin reviews github.com only.
+**Assigned to me for review** lists the open pull requests and merge requests you are a reviewer of, on github.com and on every GitLab host `glab` is logged in to.
 
-To guide the branch you are already on, open the Command Center in its workspace and choose **Guided Review: guide this branch's PR/MR**, or select **Guide this branch's PR/MR** in an empty **Guided Review** panel. The plugin reads the workspace's branch and `origin` with `git`, finds the open pull request or merge request whose source branch it is, and offers a choice when there are several. When the working tree is clean and the branch has no commits the pull request or merge request lacks, the plugin fetches its head and fast-forwards the branch to it (`git merge --ff-only`), and the guide lives in that workspace. A branch with uncommitted changes, untracked files included, or one that has diverged is never touched: the panel says why in one line, and the guide goes to a new workspace checked out at the head, which the panel links.
+- Select **Review** to start a review, **Open** to open one, or **Continue** to reopen one whose workspace was closed.
+- Filter by forge, by state under **States**, with **Needs my attention** or **Hide drafts**, or search.
+- Select a column heading to sort, and **Columns** to choose what the table shows.
+- Tick a row's box to check it off while it waits on someone else.
+  It comes back when someone pushes to it, asks you to review again, or GitLab resets your approval.
+- Select **Refresh** to list again.
 
-In that workspace a guide agent, labelled **Guide: <title>**, reads the pull request or merge request and writes the guide, which the panel shows once it is done: the idea behind the change, what you need to know, the decisions the author made, with the alternative they rejected only where their own words say so, quoted from the description, a commit message, a linked issue or the diff, where to spend your attention, and the change split into concepts. Each concept shows the code it covers: the hunks of each file it names, or the lines within a hunk when a hunk holds more than one concept, with old and new line numbers, added and removed lines coloured, and the code highlighted the way Paseo highlights its own diffs, in the same languages. The guide explains; it reports no bugs, risks or style problems and suggests no fixes. While it is being written the panel links the agent, whose chat you can follow. The agent is read-only: it runs in its provider's plan or read-only mode, or another mode you pick that asks before a tool runs, and the plugin denies every request it makes to edit, write or run a command. While it writes the guide or a suggested wording, which nobody is watching, the plugin also allows its requests to read and search files and denies anything else it asks, so the run never stalls on a prompt; in a conversation you started with **Ask about this** or **Ask agent**, those requests are left for you to answer in its chat. Guides are kept per head commit, so reopening the panel shows the stored guide, and archiving the workspace archives the agent.
+The count beside **Guided Review** in the sidebar is how many reviews need your attention.
 
-**Description**, above **Overview** in the panel's list, is the pull request's or merge request's description in full, as its author wrote it, so nothing they wrote for reviewers is missed: headings, lists and task lists, tables, code and folded sections are drawn as on the forge, and links open in the browser. It is there as soon as the review is, while the guide is still being written, and a review in which nothing is marked understood yet opens on it. When the author edits the description after the guide was written, the page shows the new text, marked **Edited since this guide was written**, and its row in the list says **edited**. Images pasted into the description are fetched with your `gh` or `glab` login, so those of a private repository show too, as long as they are PNG, JPEG, GIF or WebP and at most 5 MB; GitLab hands them out only from 17.4. An image hosted anywhere else, or one that cannot be shown, is a link that opens it in the browser, with the reason beside it. Other HTML in the description, apart from folded sections, line breaks and images, is shown as written. In the Paseo phone app the description is a card right before the guide.
+If a review workspace shows no panel, select **Open Guided Review** in the workspace's header.
 
-The concepts are shown in layers, foundations first: each concept names the concepts it builds on and why, and a concept in a later layer builds only on earlier ones, in three layers at most. A concept that builds on others but that nothing builds on is labelled **Leaf** under its title, since it tends to follow a pattern already explained. Tests sit in a **Tests** group after the layers, docs in a **Documentation** group, and pure wiring in a **Supporting** group after that, and so do lockfiles and generated files, which the plugin recognises by their paths and never shows the agent, so a large change stays within its reach. Every change is covered by a concept, in Supporting, or in an **Unsorted** group that lists what the agent placed nowhere, so nothing in the change is skipped silently: when concepts cover only some hunks of a file, the rest of that file is listed in Supporting or Unsorted too, marked as part of the file's changes. Each Supporting and Unsorted file shows its diff under it, the whole of it or the part no concept covers, so tests and wiring can be read where they are listed; lockfiles and generated files start with theirs hidden behind **Show the diff**, and stay in Supporting even when the agent names one in a concept.
+### Read the guide
 
-In a wide window the panel lists the guide's entries in a column on its left and keeps the pull request or merge request, your progress and your drafts in a column on its right; in a narrower one both share the left column. Drag a column's edge beside the guide to resize it, and double-click the edge to put it back to its default width. Each workspace's panel keeps its own widths, on the device you set them on, for the last 100 workspaces you resized. When the window gets too narrow to leave the guide its room, the columns give way, and they come back as you left them once it widens again.
+A new review opens on the PR/MR's **Description**.
+The guide follows with an **Overview**: the idea behind the change, the author's decisions, and where to spend your attention.
+Then come the concepts of the change in layers, foundations first, each with the code it covers.
+Tests, documentation, supporting changes, and anything the guide did not place are listed after the layers, so every changed line shows up somewhere.
 
-To dig into a concept, select **Ask about this** on it, type your question in the box that opens, and select **Ask agent**. The plugin sends the guide agent your question with what the guide says about the concept, closes the box and opens the agent's chat, where you carry on the conversation. Each file in Supporting and Unsorted has its own **Ask about this**, whose question goes with the file, how it changed and where the guide put it. The agent answers only when it is idle, since a new prompt would cut off the answer it is writing; while it is busy the box says so and keeps your question, and you ask again once it has finished. A Paseo version that cannot open an agent's chat from a plugin does not offer it.
+- Select **Mark understood** on a concept or file once you have read it, or **Understood → next** at the bottom to move on.
+- Select **Mark all understood** on a group to skip it in one go.
+- Select **Ask about this** to ask the guide agent a question; its chat opens with your question.
 
-To keep your place in a large review, select **Mark understood** on each concept, and on each file in Tests, Documentation, Supporting and Unsorted, once you have read it; selecting it again takes the mark back. **Mark all understood** beside a layer's or group's heading marks everything in it at once, to skip all the tests in one go for instance, and selecting it again once all are marked takes every mark back. Above the concepts the panel shows how much you have understood overall, in each layer from the foundations up, and in Tests, Documentation, Supporting and Unsorted, and names the next layer to read, so you can see whether the foundations are covered before moving on. Your marks are kept on disk per head commit and survive Paseo restarts. A guide generated again, after **Try again** or in a new workspace, starts with none, since its concepts may be split differently.
+The panel picks up where you left off, also after a restart.
 
-When new commits are pushed after the guide was written, the panel shows **PR updated since this guide** (**MR updated** on GitLab), which it checks for when it opens and every minute while it is open. Nothing is regenerated on its own, so the guide never changes while you read it, and starting the review again keeps the guide and its workspace where they are. Select **Regenerate** to move on: the plugin reads the pull request or merge request at its new head, fast-forwards the guide's workspace to it the same way as your own branch, and has a new guide agent write a guide for that head, which the panel then shows. The concepts you marked understood stay marked where a concept of the new guide covers exactly the same code, whatever it is called and wherever the push moved its lines, and so do Supporting and Unsorted files whose listed diff did not change; everything else starts unmarked. A workspace that cannot be fast-forwarded, because it has uncommitted changes or the branch was force-pushed, is left untouched, and the new guide goes to a new workspace checked out at the head, which the panel opens.
+### When the PR/MR changes
 
-When the pull request or merge request carries commits of another one that its target branch does not have yet, such as a branch cut from another's branch, or one that merged another in after it landed elsewhere, the diff shows their changes as its own, and so does the guide. A warning line pinned above the guide says so on every page, and its **Fix** opens **Issues**, listed first in the navigator, which shows **Commits from other PRs** (**MRs** on GitLab): how many of the commits come from which pull requests or merge requests, merged where or still open against what, and where its own work starts when all the other work comes before it. A commit counts as another's when the forge also links it to an open or merged pull request or merge request from a different branch; a closed one was never reviewed, and one from the same branch is an earlier attempt at this one. **Ask the author to fix it** opens a comment, drafted from what the banner says, that asks the author to retarget or to bring the other work into the target; edit it, then select **Post**. On GitLab it is a thread the author resolves, which can hold merging back until they do; on GitHub it is a comment on the pull request. On your own pull request or merge request the banner says what to do instead. The commits are checked when the review starts and on every **Regenerate**, so the banner goes once the other work has landed in the target.
+When someone pushes new commits, the panel shows **PR updated since this guide** (**MR updated** on GitLab).
+The guide does not change on its own.
+Select **Regenerate** to guide the new head; concepts you marked understood stay marked where their code did not change.
 
-When all the other work comes before the pull request's or merge request's own, **Issues** asks, before any guide is written, whether to guide the **Whole diff** or its **Own work only**, and the review list shows it as **Choose what to guide** until you do. A guide of the own work explains only the files its own commits change, from the commit its own work starts at; the files only the others change are listed in **From other PRs** (**MRs**) after Unsorted, unexplained, to mark like any other, and a file both change is explained whole. Your choice holds after **Regenerate**, and the banner switches the guide to the other at any time, keeping what you marked understood where the code is the same. Interleaved commits, or more than the forge lists, leave only the whole diff.
+When the PR/MR carries commits from another PR/MR, a warning says so above the guide.
+Select **Fix** to see which, ask the author to retarget, or choose whether to guide the **Whole diff** or its **Own work only**.
 
-To comment on the code, tap a line in any diff in the panel, drag across lines to comment on a range (on a touch screen, rest your finger on the first line before dragging, since a plain swipe scrolls), or select **Comment on file** in a file's header. A range stays within one hunk, as the forges require. Saving puts the comment on the forge at once as a draft: on GitHub, a thread on your pending review, which is the one you already started on github.com if there is one; on GitLab, a draft note. Nothing is published until you submit the review. Your drafts show under the lines they are on and in **Your drafts** above the guide, including the ones you started on the web, and you edit and delete them there; select **Refresh** to pick up drafts added on the web since the panel opened. **Regenerate** leaves your drafts on the forge as they are, and new comments go on the lines of the regenerated guide.
+### Comment
 
-To make a point about a concept that spans several files, select **Comment on this concept** on its card. On GitLab the comment is a draft note on the merge request as a whole, which becomes a thread of its own when you submit; on GitHub it is a paragraph of your pending review's body, after your own text. The plugin remembers which concept each draft came from, a comment on code drawn in a concept included, and **Your drafts** groups them under their concept, with the rest (drafts started on the web, comments on Supporting and Unsorted files) in a list of their own; that link stays on your machine and is never posted. After **Regenerate** a draft stays under the concept that covers the same code, and joins the rest when that code changed. Nothing marks a GitHub paragraph as a concept's comment, so the plugin recognises it by its exact text: one you edit on github.com becomes part of your own body text instead.
+- Tap a line in any diff to comment on it, or drag across lines for a range.
+  On a touch screen, hold the first line before dragging.
+- Select **Comment on file** in a file's header.
+- Select **Comment on this concept**, or highlight text in the guide, to comment on the change as a whole.
+  In the phone app, hold a paragraph instead.
 
-To comment on something the guide itself says, highlight the text in the overview or in a concept's card with the mouse: as you let go, a comment box opens right under the paragraph or bullet the highlight ends in, without taking the highlight away, so you can still copy it. Highlighting other text in the same paragraph moves the box to it and keeps what you typed; while another comment box is open, or on a touch screen, select **Comment on selection** at the foot of the card instead. The comment goes on the pull request or merge request as a whole, like a comment on a concept: under its concept, or in its own **Overview** group in **Your drafts** when the text is from the overview. The text you highlighted is shown above the comment and kept on your machine, never posted, since nobody reading the review has seen the guide; after **Regenerate** it is marked as from an earlier guide. **Suggest wording** writes the comment about what the text says, in the code's own terms, without quoting it. In the Paseo phone app, which cannot tell what is highlighted, hold a paragraph or a bullet of the guide instead to comment on the whole of it, in a box that opens under it.
+Type a rough thought, or nothing, and select **Suggest wording** to have the guide agent write the comment for you.
+Select **Ask agent** instead of saving to ask the guide agent about the lines rather than comment on them.
 
-To have a comment worded for you, type a rough thought or an instruction in the comment box, or nothing at all, and select **Suggest wording**. The guide agent writes the comment from the lines it is on, or for a comment on a concept from what the guide says about it, the concept they belong to, your conversation with it so far and what you typed, and the box gets the text for you to edit and save; nothing is saved or posted until you do. The wording is meant for people who have never seen the guide, so it names code by its files and functions rather than by the guide's concepts, and it adds no findings of its own; a comment on a concept opens by saying what it is about in plain words ("About the retry handling: …"), since no code sits beside it. Like **Ask about this**, it asks only an idle agent: while the agent is busy, or when it fails, the box says so and keeps what you typed.
+**Save draft** puts the comment on the forge as a draft right away.
+Nobody sees it until you finish the review.
+**Your drafts** lists them, including drafts you started on the web.
 
-To ask the guide agent something rather than comment on it, type your question in a new comment box, on lines of code, a file, a concept or text you highlighted, and select **Ask agent** instead of saving. The plugin sends the agent your question with what the box is on, the lines or what the guide says there, closes the box and opens the agent's chat, where you carry on the conversation; nothing is saved or posted. Like **Ask about this**, it asks only an idle agent: while the agent is busy, or when nothing could be sent, the box says so and keeps your question. As for **Ask about this**, a Paseo version that cannot open an agent's chat from a plugin does not offer it.
+On GitHub, comments on a concept or on highlighted text are the exception: they stay on your machine until you finish the review, and are then posted as separate comments on the pull request, before the review itself.
+On GitLab they are draft notes on the merge request as a whole, like any other draft.
 
-When you are done, select **Finish review** below your drafts. It shows the review body, which is your pending review's own body on GitHub (so one started on github.com is there too), and every draft with where it sits, a comment on a concept by its concept, and offers **Approve**, **Request changes** and **Comment**. **Save body** keeps an edited body without submitting; a submit sends the body as it is in the box, followed on GitHub by your comments on concepts. On your own pull request, and on a closed or merged one, only **Comment** is offered, though you can still write drafts. When commits were pushed since the guide was written, a warning above the verdicts says how many, or that the branch was rewritten, since a verdict would apply to code the guide did not explain, with **Regenerate the guide** beside them; you can still approve or request changes from the guide you read. The same warning shows when the forge cannot be asked where the head is. The plugin asks the forge again the moment you submit, and when the head is not the one you were warned about, it sends nothing and shows the new warning, so you submit again knowing what you approve. On GitHub your review stays on the commit the guide explained, so a repository that dismisses stale approvals may not count it. After a submit the panel lists each step the forge took and whether it landed, so a partial failure tells you what is left to do on the forge. **Discard review** deletes your pending review, its drafts and its body, after you confirm.
+### Finish the review
 
-GitLab keeps no review body before a review is submitted, so on a merge request the plugin keeps the body until you submit or discard. A submit publishes all your draft notes at once, your comments on concepts among them, with the body, and marks you as having reviewed the merge request, or as requesting changes. **Approve** then approves the merge request at the head the plugin checked as you submitted, which GitLab refuses if new commits are pushed in between. After every verdict the plugin reads the reviewer list and reports the state GitLab shows for you as a step of its own: for **Request changes**, when GitLab did not record it, the plugin requests changes through GitLab's GraphQL API instead; for **Approve** and **Comment** it sets nothing, and a state that did not take is reported for you to set on the merge request's page. When you are not one of the merge request's reviewers, GitLab keeps no state for you, which the step says without counting it a failure. A GitLab older than 19.2 ignores the body and the reviewer state when it publishes the drafts, so on such a GitLab, or one whose version the plugin cannot read, the body is posted as a comment of its own right after them. **Discard review** deletes all your draft notes, including the ones on the merge request as a whole.
+Select **Finish review**, write the review body, and choose **Approve**, **Request changes**, or **Comment**.
+If commits were pushed since the guide was written, a warning says so before you submit.
+After a submit, the panel lists each step and whether it went through.
+On GitHub your review stays on the commit the guide explained, so a repository that dismisses stale approvals may not count an approval when commits were pushed since.
 
-The workspace is a worktree of a local clone. The plugin uses the Paseo project whose `origin` is the repository the pull request or merge request targets; when there is none, it clones the repository once with `gh repo clone` or `glab repo clone` into `$PASEO_HOME/plugin-data/guided-review/clones/` and reuses that clone for every later review of it.
-
-Requires Paseo 0.11 or newer.
+**Discard review** deletes your drafts and the body.
 
 ## Settings
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| gh path | `gh` | The `gh` the daemon runs: a command on the daemon's `PATH`, or an absolute path. |
-| glab path | `glab` | The `glab` the daemon runs, read the same way. |
-| Guide agent provider and model | `claude-tty` | The agent that writes guides: a provider for its default model, or `provider/model` as Paseo names them, like `codex/gpt-5.5`. The default is the provider of the [claude-tty](../claude-tty) plugin, and the built-in `claude` takes its place on a host where that is not available. Applies to guides generated after the change. |
-| Guide agent effort | _blank_ | One of the model's effort levels as Paseo names them, like `high`; blank for the model's default. |
-| Guide agent mode | _blank_ | The mode the guide agent runs in; blank for its provider's plan or read-only mode. Only a mode that asks before a tool runs is taken, like Claude's `default`, since the plugin can deny only what the agent asks for; `acceptEdits`, `auto` and the like are refused. |
-| Syntax theme | GitHub | The syntax theme the diffs are highlighted with, one of Paseo's own, in its dark or light variant to suit Paseo's theme. Plugins cannot read the one picked under Appearance in Paseo's settings, so pick the same one here. |
+| gh path | `gh` | The `gh` the daemon runs: a command on its `PATH` or an absolute path. |
+| glab path | `glab` | The `glab` the daemon runs, the same way. |
+| Provider and model | `claude-tty` | The agent that writes guides: a provider, or `provider/model` like `codex/gpt-5.5`. Falls back to `claude` when the [claude-tty](../claude-tty) provider is not available. |
+| Effort | _blank_ | The model's effort level, like `high`. Blank uses the model's default. |
+| Mode | _blank_ | The guide agent's mode. Blank uses the provider's plan or read-only mode. Only modes that ask before running a tool are accepted. |
+| Syntax theme | GitHub | The theme diffs are highlighted with. Pick the same one as under Appearance in Paseo's settings, which plugins cannot read. |
+
+The guide agent settings apply to guides written after you select **Use these for new guides**.
 
 ## Troubleshooting
 
 | Message or symptom | What to do |
 | --- | --- |
-| **That is not a GitHub pull request URL, …** | Paste the pull request's or merge request's own URL, like `https://github.com/owner/repo/pull/123` or `https://gitlab.com/group/project/-/merge_requests/123`. |
-| **glab is not logged in to …** | Run `glab auth login --hostname <host>` on the daemon's host. A self-hosted GitLab on a port needs that host set up in `glab`'s own config. |
-| **Could not run gh at "gh"** or **Could not run glab at "glab"** | The daemon's `PATH` is often shorter than your shell's. Put the output of `command -v gh` or `command -v glab` in the matching path setting. |
-| **gh failed: …** or **glab failed: …** | The CLI refused the call; its own words follow. Check `gh auth status` or `glab auth status` on the daemon's host. |
-| **Could not create a workspace for …** | Paseo could not check the pull request or merge request out; the reason follows. The worktree is cut from the Paseo project whose `origin` is its repository. |
-| **No open pull request in … comes from …** | The workspace's branch is not the source branch of an open pull request or merge request in its `origin` repository. Push it and open one, or start from the URL. |
-| **… has uncommitted changes, so it was left untouched** or **… has commits that are not in …** | Commit, stash or push your work, then guide the branch again to have the guide in your own workspace; until then it is in the PR workspace. |
-| **The previous PR workspace has uncommitted changes** or **… has commits that are not in … any more** | **Regenerate** could not fast-forward the old workspace to the new head, so the guide moved to a new one. Archive the old workspace once you no longer need it. |
-| No **Commits from other PRs** banner though the diff shows another's changes | The forge links the commits to no other open or merged pull request or merge request: a rebase onto another branch makes new commits, which nothing links. When the forge could not be asked, `paseo plugin logs guided-review` has **Could not read which change requests the commits of … belong to** with the CLI's own words. |
-| No **PR updated since this guide** banner though commits were pushed | The forge could not be asked where the head is, and the panel shows no banner until it can; `paseo plugin logs guided-review` has **Could not check … for new commits** with the CLI's own words. GitLab shows a push once it has worked out the new diff, a moment after it. |
-| **GitLab did not keep the comment where it was put, so the draft was deleted again** | GitLab stored the draft somewhere other than the line, range or file it was sent for, so the plugin took it back rather than leave it misplaced. A comment on a whole file needs GitLab 17.2 or newer; on an older one, comment on a line instead. If the message says deleting it failed too, delete the draft on the merge request's page. |
-| **… runs GitLab …; listing your reviews needs 19.2 or newer** | That GitLab host keeps no record of when your review last changed, which the list needs to tell a push after your review apart. Paste the merge request's URL instead. |
-| **Could not keep these filters for next time** | The plugin could not write `inbox-preferences.json` in its data directory; the filters still apply until the list is closed. |
-| **Could not keep that check-off** | The plugin could not write `inbox-check-offs.json` in its data directory; the box is put back as it was. |
-| **This review was interrupted before it was ready** | The plugin restarted while preparing the workspace. Start it again. |
-| **The guide agent's answer did not match what was asked for: …** | The agent's guide was not in the expected shape, or named code the change does not have; the problems follow. Select **Try again** in the panel, or pick a stronger model in the **Guide agent** setting. |
-| **The … mode of … runs tools without asking** or **The … provider has no … mode** | Pick a mode that asks first in the **Guide agent** settings, like `plan` or `default`, or leave it blank. |
-| **The … provider offers no model for the guide agent** or **Could not create the guide agent with …** | Check the **Guide agent** setting against the providers and models Paseo lists for new agents. |
-| **The guide agent did not finish within 30 minutes** | Open the guide agent to see where it got stuck, then select **Try again**. |
-| **The guide agent is busy with another answer** | It is still answering an earlier question. Open its chat to follow it, and ask again once it has finished. |
-| **The guide agent is gone: it was archived or closed** | The guide has no agent left to answer questions; its chat was archived or closed. |
-| **The suggestion was lost, most likely to a plugin restart** | The plugin restarted while the guide agent was wording the comment. Select **Suggest wording** again once the agent has finished. |
-| **… is not in the diff, so a comment cannot be anchored there** | Forges take line comments only on lines the diff shows. Comment on a line in a hunk, or on the whole file. |
-| **A comment on several lines has to stay within one hunk of the diff** | Drag within one hunk, or leave one comment per hunk. |
-| **gh failed: … could not be resolved** when saving a draft | GitHub could not place the comment, usually because the pull request has moved on since the guide was written. Comment on the whole file instead. |
-| **Could not check … for new commits: …** under the verdicts | The forge could not be asked where the head is, so a verdict may apply to commits the guide did not explain. Close and reopen **Finish review** to ask again, or submit knowing that. |
-| **The … changed again since Finish review read it** | Commits were pushed, or the forge became readable or unreadable, between opening **Finish review** and submitting. Nothing was sent; read the new warning and submit again. |
-| **This comment is no longer in your pending review's body as it was written** | A comment on a concept was edited or removed on github.com, so the plugin no longer tells it apart from your own body text. Edit it in the review body under **Finish review**. |
-| **Only part of your review went through** | The steps marked **Failed** or **Not tried** did not land. Finish those on the forge's web page. On GitLab, a body that was not posted stays in **Finish review**, and submitting again as **Comment** posts it. |
+| **gh failed: …** or **glab failed: …** | Check `gh auth status` or `glab auth status` on the daemon's host. |
+| **glab is not logged in to …** for a GitLab on a non-standard port | The plugin passes the host without its port. Set the port for that host in `glab`'s own config. |
+| **… listing your reviews needs 19.2 or newer** | That GitLab is too old for the review list. Start the review from its URL instead. |
+| **The guide agent's answer did not match what was asked for** | Select **Try again**, or pick a stronger model under **Provider and model**. |
+| **GitLab did not keep the comment where it was put** | Comments on a whole file need GitLab 17.2 or newer. Comment on a line instead. |
+| **gh failed: … could not be resolved** when saving a draft | The PR moved on since the guide was written. Comment on the whole file instead. |
 | **GitLab did not record your request for changes: Reviewer not found** | Your drafts and body were published, but an older GitLab records a request for changes only from someone already listed as a reviewer. Add yourself as a reviewer on the merge request's page and request changes there. |
-| **GitLab lists you as …, not …** under **Confirm your reviewer state** | Your review was published, but your reviewer state did not follow, which an older GitLab does. Set it with the reviewer menu on the merge request's page. |
-| **GitLab did not approve, as the MR got new commits while your review was being submitted** | Your drafts were published, but a push landed between the plugin checking the head and approving. Close and reopen **Finish review** to see the new commits, and approve again. |
-| **… of your draft notes could not be deleted** | **Discard review** deleted the rest. Delete the ones it names on the merge request's page. |
+| No **PR updated since this guide** warning after a push | The forge could not be reached. Check `paseo plugin logs guided-review`. |
 
 Run `paseo plugin logs guided-review` for more detail.
 
 ## Development
 
-```sh
-pnpm typecheck
-pnpm test
-paseo plugin reload guided-review
-paseo plugin logs guided-review
-```
+For development instructions, see the [root README](../../README.md#development).
 
-Paseo builds the app bundle from `index.client.tsx` and the daemon bundle from `index.server.ts`. A module's directory decides which it joins: `client/` the app's, `server/` the daemon's, `shared/` both.
+Design decisions are in [docs/adr](docs/adr).

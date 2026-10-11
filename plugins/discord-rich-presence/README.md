@@ -2,7 +2,7 @@
 
 [![Paseo Cafe](https://img.shields.io/badge/Paseo_Cafe-discord--rich--presence-blue)](https://paseo.cafe/plugins/discord-rich-presence)
 
-Show your current Paseo activity on Discord. The Paseo daemon and Discord app must run on the same machine.
+Show your current Paseo activity on your Discord profile.
 
 ## Screenshots
 
@@ -14,27 +14,33 @@ Show your current Paseo activity on Discord. The Paseo daemon and Discord app mu
 
 ## Installation
 
-```sh
-paseo plugin add sleeyax/discord-rich-presence
-```
+Requires:
 
-That installs the release published to the [Paseo plugin registry](https://paseo.sh/plugins), which needs Paseo 0.11 or later. To install straight from this repository's default branch instead:
+- Paseo 0.11 or newer
+- The Discord desktop app, running on the same machine as the Paseo daemon
 
 ```sh
 paseo plugin add github:sleeyax/paseo-plugins:plugins/discord-rich-presence
 ```
 
-Either way, `paseo plugin update discord-rich-presence` picks up new releases without a clone, and `paseo plugin update discord-rich-presence --check` says what is installed against what is available.
+Also available as `sleeyax/discord-rich-presence` on [Paseo Community Plugins](https://paseo.sh/plugins) and on [Paseo Cafe](https://paseo.cafe/plugins/discord-rich-presence).
 
-The plugin uses a shared Paseo Discord application by default. Open **Discord** in the Paseo sidebar to see the connection status and change its settings.
+Update with `paseo plugin update discord-rich-presence`.
+To install from source, see the [root README](../../README.md#from-source).
 
-Native, Snap, and Flatpak Discord installations are supported. The plugin reconnects automatically when Discord starts.
+Native, Snap and Flatpak installs of Discord all work.
 
-Requires Paseo 0.11 or newer. Versions of the plugin made for Paseo older than 0.9 stored settings in `${XDG_CACHE_HOME:-~/.cache}/paseo-plugins/discord-rich-presence/`, which is no longer read. After updating from one of those, set your detail levels and application ID again (until then, every project shows as **Detailed**), then delete that directory.
+## Usage
 
-## Settings
+### Open the panel
 
-**Detail level** decides how much of your work reaches your profile:
+Select **Discord** in the Paseo sidebar.
+The panel shows the connection status, a preview of your presence, and the settings.
+The presence starts on its own, and reconnects when you start Discord later.
+
+### Choose how much to show
+
+The detail level decides how much of your work reaches your profile:
 
 | Level | Example |
 | --- | --- |
@@ -42,15 +48,20 @@ Requires Paseo 0.11 or newer. Versions of the plugin made for Paseo older than 0
 | Projects only | `paseo-plugins` and `3 workspaces` |
 | Hidden | `Using Paseo` |
 
-The second line counts only the project named on the first, so work in your other projects never shows through.
+Discord names one project at a time, and the second line counts only that project.
 
-**All projects** sets the level every project follows. Every project Paseo knows is listed beneath it, whether or not it has a workspace open, and each starts on **Default**. Giving one a level of its own saves it by project path until you set it back to **Default**. Workspace titles can contain task details, so review them before leaving a project on **Detailed**.
+Set the level for every project with **All projects**.
+To give one project its own level, change it in the list below.
+Workspace titles can contain task details, so check them before you leave a project on **Detailed**.
 
-A project set to **Hidden** is never named: Paseo names another project with active work when possible, and otherwise falls back to `Using Paseo`.
+You can also search the Command Center for `Discord rich presence`.
+It turns the presence on or off, and from a workspace it sets the level of that workspace's project.
 
-Use the sidebar or Command Center to turn the presence on or off and to show the current project as Detailed, Projects only, Hidden, or at the default level. Turning the presence off removes it immediately.
+When no workspace has been active for 30 minutes, Discord shows only `Using Paseo`.
 
-The status badge matches the workspace state shown by Paseo:
+### Read the status badge
+
+The small badge shows the state of the workspace Discord names:
 
 | Badge | State |
 | --- | --- |
@@ -60,49 +71,56 @@ The status badge matches the workspace state shown by Paseo:
 | Green | Finished and waiting for you |
 | Grey | Idle |
 
-The green badge may appear briefly whenever an agent finishes a turn. It clears after you view the session.
+The green badge can appear briefly each time an agent finishes a turn.
+It clears once you view the session.
 
-## Use your own Discord application
+### Use your own Discord application
 
-The default Application ID is shared. To use your own:
+By default, the presence uses a shared Paseo application.
+To use your own instead:
 
-1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications). Its name becomes the bold title in your presence.
+1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications). Its name becomes the bold title of your presence.
 2. Copy its **Application ID** from **General Information**.
-3. Under **Rich Presence → Art Assets**, upload the six files from `assets/` using their filenames as the asset keys.
-4. Enter the new Application ID in the plugin settings and select **Save**.
+3. Under **Rich Presence → Art Assets**, upload the six images from [`assets/`](./assets). Keep their file names as the asset keys.
+4. In the panel, open **Advanced**, paste the Application ID, and select **Save**.
 
-Discord may take a few minutes to process uploaded artwork. Clearing the Application ID disables the connection until you save another one.
+Discord can take a few minutes to process new artwork.
+
+## Settings
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| Show my activity on Discord | On | Turns the presence on or off. Turning it off removes it from your profile at once. |
+| All projects | Detailed | The detail level every project follows. |
+| A project's level | Default | Overrides the detail level for that project. |
+| Application ID | The shared Paseo application | The Discord application your presence appears under. |
 
 ## Troubleshooting
 
-| Message or symptom | What to do |
+| Message | What to do |
 | --- | --- |
-| **Discord refused this application ID** | Copy the ID again from the Developer Portal and save it. The plugin does not retry a refused ID until it changes. |
-| **Discord not running — retrying…** | Start Discord and wait for the plugin to reconnect. |
-| **Cannot read Paseo** | Check that the daemon is reachable and is not listening on a Unix socket. The plugin checks `PASEO_HOST`, `PASEO_LISTEN`, `$PASEO_HOME/paseo.pid`, then the daemon config. |
-| Icons appear without images | Check the asset filenames and wait for Discord to finish processing them. |
+| **Discord is not running — retrying…** while Discord is open | The plugin looks for Discord's socket only in the first of `$XDG_RUNTIME_DIR`, `$TMPDIR`, `$TMP`, `$TEMP` that is set in the daemon's environment, else in `/tmp`. Run the daemon as the same user as Discord, with the same `XDG_RUNTIME_DIR`. |
+| **Discord refused this application ID** | Check the ID in the Developer Portal. The plugin tries again only after you save a different ID, or turn the presence off and on. |
+| **Cannot read Paseo** | The plugin reads the daemon address from `PASEO_HOST`, `PASEO_LISTEN`, `$PASEO_HOME/paseo.pid`, then `daemon.listen` in `$PASEO_HOME/config.json`, and falls back to `127.0.0.1:6767`. If the daemon needs a password, set `PASEO_PASSWORD` in the daemon's environment. |
+| The badge or icon has no image | Check that each asset key matches its file name, then give Discord a few minutes. |
 
 Run `paseo plugin logs discord-rich-presence` for more detail.
 
 ## Development
 
-```sh
-pnpm typecheck
-pnpm test
-paseo plugin reload discord-rich-presence
-paseo plugin logs discord-rich-presence
-```
+For development instructions, see the [root README](../../README.md#development).
 
-Paseo builds the app bundle from `index.client.tsx` and the daemon bundle from `index.server.ts`. A module's directory decides which it joins: `client/` the app's, `server/` the daemon's, `shared/` both.
-
-The Discord IPC client in `server/ipc.ts` is implemented without a dependency because CommonJS packages do not survive Paseo's plugin compiler.
-
-To regenerate the Discord artwork after Paseo changes its assets, run:
+To regenerate the artwork in `assets/` after Paseo changes its own, run this against a Paseo checkout:
 
 ```sh
 scripts/render-assets.sh /path/to/paseo
 ```
 
-## Attribution
+The script needs ImageMagick (`magick`) and `rsvg-convert`.
 
-The files in `assets/` are derived from the Apache-2.0-licensed artwork in [getpaseo/paseo](https://github.com/getpaseo/paseo/tree/main/packages/app/assets/images). Paseo relicensed from AGPLv3 to Apache-2.0; note that the licence's trademark clause does not grant any right to Paseo's name or marks.
+Design decisions are in [docs/adr](docs/adr).
+
+## License and attributions
+
+The images in `assets/` are derived from the Apache-2.0 artwork in [getpaseo/paseo](https://github.com/getpaseo/paseo/tree/main/packages/app/assets/images).
+That licence grants no right to Paseo's name or trademarks.

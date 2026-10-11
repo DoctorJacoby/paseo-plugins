@@ -1,11 +1,13 @@
 # Working on this plugin
 
-Run `paseo plugin reload catppuccin-theme` after every change.
-The reload is the only compile check of the bundle the daemon builds from `index.client.ts`.
-Do this yourself; never leave it to the user.
+Run `paseo plugin reload catppuccin-theme` after every change; it is the only compile check of the client bundle.
+Do this yourself rather than leaving it to the user.
 
-The plugin is nothing but data: four `addTheme` calls, no surface and no `server.handle`, so there is no server entry, and `pnpm test` only checks that `contribute` registers every flavour.
-`PluginThemeColors` is the eight tokens Paseo expands into its own set, and the host parses a contribution with a Zod `strictObject`, so a ninth key is rejected rather than ignored.
-v0.7 added `statusSuccess` and `statusWarning` to `PluginTheme` — what a plugin *receives* — and not to the contribution, so a mismatch with the app is still fixed by choosing a different palette colour for one of the eight.
-Paseo expands a contribution by reading `border` as its `surface3` and `ring` as its `surface4` and `foregroundExtraMuted`, which is what those two are really choosing.
-Every flavour uses the same palette-to-token mapping, so a fix to one belongs in all four.
+The plugin is four `addTheme` calls in `index.client.ts` and has no server entry.
+
+## Theme tokens
+
+- A contribution takes exactly the eight colours in `PluginThemeColors`; the host parses it strictly, so an extra key is rejected, not ignored.
+- `statusSuccess` and `statusWarning` exist on `PluginTheme`, which a plugin receives, not on the contribution. Fix a clash with the app's status colours by picking a different palette colour for one of the eight.
+- Paseo derives `surface3` from `border`, and `surface4` and `foregroundExtraMuted` from `ring`, so those two choose more than their names say.
+- All four flavours use the same palette-to-token mapping; a fix to one belongs in all four.

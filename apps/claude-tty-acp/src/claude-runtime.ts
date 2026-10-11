@@ -765,7 +765,8 @@ export class ClaudeRuntime {
   private async emitContextUsage(stopReason: string): Promise<void> {
     if (stopReason === "cancelled" || this.closed || !this.contextFilePath) return;
     // The mtime rather than the contents marks this turn's reading, because two turns that land on the same numbers write identical files.
-    // See the README on why it is taken at the Stop hook and compared against itself rather than against Date.now().
+    // It is taken at the Stop hook rather than here, because draining the transcript and delivering the turn's last message both run in between and can outlast Claude's refresh.
+    // It is compared against itself rather than against Date.now(), because Linux stamps files from a coarse clock that can date a write milliseconds before the wall clock that observed it.
     const before = this.contextMtimeAtTurnEnd;
     const waits = this.contextWaitMisses < CONTEXT_WAIT_MISS_LIMIT || this.contextWaitMisses % CONTEXT_WAIT_RETRY_TURNS === 0;
     const deadline = Date.now() + this.contextRefreshTimeoutMs;

@@ -1,121 +1,108 @@
 # Claude TTY
 
-Adds **Claude TTY** to Paseo's provider list: the genuine interactive Claude Code CLI, driven in a PTY by the [Claude TTY ACP adapter](../../apps/claude-tty-acp).
-
-The plugin registers the provider itself and runs the adapter it was installed beside, so there is no provider entry to write into the daemon configuration and nothing to reload. It also diagnoses the adapter and manages its saved sessions from Paseo's sidebar, on whichever host is selected.
-
-Owning the provider is also what lets Claude's own interactions use Paseo's cards for them. A question Claude asks becomes one question form holding every question at once — radio buttons, checkboxes where Claude allows several answers, and a box for an answer that is on none of the lists — and a plan becomes a plan card with Implement and Reject. Both are answerable from a terminal too: `paseo permit allow <agent> <id> --input '{"answers":{"Runtime":"Node"}}'` answers a whole form, keyed by the label each question shows.
-
-Owning it is also what lets a subagent be more than a card. An agent a session launches opens as a **subsession** of the Paseo agent that launched it, with a timeline of its own: what it was asked to do, what it said, and every tool call it made, with the file it read, the command it ran and the reason anything failed — not the bounded tail the launching card has room for. A subsession takes no prompts, because the subagent behind it takes none: it answers to the one prompt its launcher handed it. It closes when the launch that started it does, which is also what a session whose Claude process stopped reports, so nothing goes on saying it is working after the process running it has gone. A command Claude runs in the background — asked to, or because it outlived its timeout — gets a subsession the same way, showing what it has printed so far, and its card in the conversation shows the end of that output until the command reports.
-
-Owning it is what gives a session its own pickers, too. The model list is Claude Code's rolling aliases and the releases behind them, and beside it is a **thinking** picker carrying Claude Code's effort levels, which claude-tty had no way to offer before. Either can be changed while a session is idle: the adapter restarts Claude on the same conversation with the new flag, so the choice is a real one rather than a message typed into the box.
-
-An agent another agent launched has no subsession of its own: the session's conversation never mentions one, so nothing there says when it stopped, and its steps stay on its spawner's card the way they always did. The card is also all there is on a daemon that does not negotiate `session.subsession`, where nothing is emitted at all.
-
-## Screenshots
-
-_None yet._
+Adds **Claude TTY** to Paseo's providers: the real interactive Claude Code CLI, run in a terminal by the [Claude TTY ACP adapter](../../apps/claude-tty-acp).
+A sidebar panel diagnoses the adapter and manages its saved sessions on the selected host.
 
 ## Installation
+
+Requires:
+
+- Paseo 0.11 or newer
+- `pnpm` on the daemon's `PATH`
+- Claude Code, installed and logged in as the user the daemon runs as
 
 ```sh
 paseo plugin add github:sleeyax/paseo-plugins:plugins/claude-tty
 ```
 
-Paseo tracks the default branch from there, so `paseo plugin update claude-tty` picks up new releases without a clone, and `paseo plugin update claude-tty --check` says what is installed against what is available.
+Update with `paseo plugin update claude-tty`.
+To install from source, see the [root README](../../README.md#from-source).
 
-Install and update both build the adapter first, from the manifest's `build` commands, which is why this plugin needs `pnpm` on the daemon's `PATH`. A failing build is reported and the installed version is left running.
+Install the plugin on each host that should offer Claude.
 
-Installing from a clone works too, and is what to do while developing the adapter — build it yourself first, since a directory installation runs no build:
+If the daemon can't build the adapter, build it from a clone yourself and put the path to `apps/claude-tty-acp/bin/claude-tty-acp` in the **Adapter executable** setting.
+The panel's **Adapter** section shows which adapter runs and whether it can.
+
+## Usage
+
+### Start a session
+
+Pick **Claude TTY** as the provider when you create an agent.
+Model, mode and effort pickers work as described in the [adapter's README](../../apps/claude-tty-acp/README.md).
+A message you send while Claude is working interrupts the turn and starts a new one with your message.
+
+### Answer questions and plans
+
+When Claude asks you something, all its questions arrive in one form.
+Pick an option, tick several where Claude allows it, or type your own answer.
+A plan arrives as a card with **Implement** and **Reject**.
+
+You can answer a question form from a terminal too, keyed by the header each question shows:
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm --filter @paseo-plugins/claude-tty-acp build
-paseo plugin add "/absolute/path/to/paseo-plugins/plugins/claude-tty"
+paseo permit allow <agent> <id> --input '{"answers":{"Runtime":"Node"}}'
 ```
 
-### Pointing the plugin at an adapter you build yourself
+### Follow subagents and background commands
 
-By default the plugin runs the adapter beside it, in the checkout it was installed from, and that is the whole story for either installation above. **Adapter executable** under Settings is the way out of it: set a path there and that is what the provider spawns, from wherever you build it.
+Each subagent a session launches opens as a subsession under its agent.
+The subsession shows the subagent's instructions, its replies and every tool call it makes.
+A command Claude runs in the background gets a subsession with its output so far.
+Subsessions are read-only, and close when the subagent or command finishes.
+A subagent launched by another subagent has no subsession; its steps stay on its parent's card.
 
-That is for a host where the default does not fit — no `pnpm` for the daemon to build with, an adapter built by whatever else builds that host's software, or a plugin whose own checkout is not the copy of the adapter you want running. It is a path to a *built* adapter: the adapter is `private` and links a native module, so there is nothing published to point at, and it is built from a clone the way the block above builds one.
+### Check the host and manage sessions
 
-The panel's **Adapter** section says which of the two is in force, and reads the path back: a path that is not there, cannot be executed, or has not been built is a sentence on the panel rather than a session that will not open. Clearing the setting goes back to the checkout's.
+Open **Claude TTY** from the sidebar.
 
-A session already open keeps the adapter it started on — the process is already running — so a change reaches the sessions started after it.
-
-**An authenticated Claude stays yours to arrange.** Run `claude` interactively as the user the daemon runs as; the plugin never touches Claude's configuration, credentials, or transcripts.
-
-Everything is host-local: selecting another host in Paseo shows that host's own answer, and each host is installed separately.
-
-### Upgrading from the `traecli` provider
-
-Earlier versions of this plugin, and the adapter's own README, registered the adapter in the daemon configuration under the provider ID `traecli`. This version registers a provider of its own, `claude-tty`, and `paseo plugin update claude-tty` leaves the old entry where it was, so Paseo lists Claude TTY twice. The panel says so under **Left over from an older install** for as long as the entry is there, with the number of agents still on it.
-
-- **An agent stays on the provider it was started on.** Agents started on `traecli` keep using the old entry and cannot resume once it is gone, so remove it once none are left: under **Settings → Providers** on that host it is the Claude TTY entry with an actions menu, and **Remove provider** deletes it from the configuration. The plugin never removes it itself.
-- **The provider ID changes.** Anything that names `traecli/<model>` — a spawn script, an agent profile, a schedule — goes on starting agents on the old entry, and stops working once it is removed. Point it at `claude-tty/<model>` instead.
-- **The idle timeout does not carry over.** A timeout chosen in the old panel was kept under `${XDG_CACHE_HOME:-~/.cache}/paseo-plugins/claude-tty/`, which this version never reads. Choose it again under **Suspend idle Claude**, and delete that directory.
+- **Diagnostics** → **Run** checks the host the adapter runs on, such as whether Claude is on the daemon's `PATH`.
+- **Sessions** lists the saved sessions, named after the agent holding each one.
+  **Open** jumps to that agent, **Stop** closes its Claude terminal, and **Release lock** clears a lock its process left behind.
+  A stopped session resumes on its next prompt.
+- **Danger zone** deletes every saved session.
+  `paseo plugin remove claude-tty` leaves them on disk; this is how you remove them.
 
 ## Settings
 
-Under **Settings → Plugins → Claude TTY** on the selected host, or from the Command Center as "Claude TTY: settings". Paseo owns the store, so the value survives a reload, an update and a daemon restart, every client sees a change without reloading, and it is deleted with the plugin.
+Open **Settings → Plugins → Claude TTY**, or run **Claude TTY: settings** from the Command Center.
+Each host has its own settings.
 
-The **Adapter executable** setting is above, under [Pointing the plugin at an adapter you build yourself](#pointing-the-plugin-at-an-adapter-you-build-yourself): empty, which is the default, runs the adapter in the checkout this plugin was installed from.
+| Setting | Default | What it does |
+| --- | --- | --- |
+| Adapter executable | empty | Path to a built adapter to run instead of the one in the plugin's checkout. Sessions already open keep the adapter they started on. |
+| Suspend idle Claude | 1 hour | How long Claude keeps running after a session goes quiet: 15 minutes to 8 hours, or Never. The next prompt resumes the same conversation. |
+| Auto-accept in new sessions | off | Where each agent's **Auto Accept** toggle starts. |
+| In Bypass Permissions sessions | Same as other sessions | Overrides the switch above for sessions in Bypass Permissions mode. |
 
-The **Suspend idle Claude** setting controls how long a native Claude process remains alive after the session last did anything. It defaults to one hour, and you can choose 15 minutes through 8 hours, or **Never**. It applies to every session on the host. The adapter's per-session ACP configuration carries the model, the effort level and Auto Accept, and moving the timeout in beside them would also move the value out of the store Paseo owns, so the one that survives a reload and an update stays host-wide.
-
-Suspending stops the PTY and any background tasks it owns, but does not close or archive the Paseo agent. The adapter keeps the persisted session mapping, and the next prompt automatically launches `claude --resume` with the same Claude session, model, mode, and effort level. The timer runs from the last thing the session actually did, not from the last prompt: a turn Claude runs on its own after a task notification, the agents it launches, and the hooks it calls all count, so a session working unattended is not stopped mid-run.
-
-A session waiting on a subagent is not suspended at all. The adapter holds the turn open until every agent it launched has reported, which is also what makes Paseo show the session as busy while they work, and a suspension stands aside for an active turn and tries again later. A turn whose agents have written nothing for fifteen minutes stops waiting, so a stuck agent cannot keep a session alive indefinitely. A command Claude runs in the background holds the turn the same way, because Claude goes idle while it runs and is woken by its report; a command that has not reported after thirty minutes — a server, typically, which never will — stops being waited on.
-
-The adapter reads the current setting each time it schedules a suspension, so a change also applies to sessions that are already open. A suspension also stands aside while a permission or question card is still waiting for an answer, and tries again later.
-
-Setting `CLAUDE_TTY_ACP_IDLE_TIMEOUT_MS` on the daemon overrides this setting for the hosts that do it, because the adapter inherits the daemon's environment and lets the variable win; the settings screen says so when something has set it.
-
-### Permission prompts
-
-Every agent has an **Auto Accept** toggle, the same switch Paseo shows for its own ACP providers. While it is on, Claude Code's permission prompts are approved once without a card, including the ones it keeps even in Bypass Permissions mode, such as removing everything in the working directory. Questions Claude asks and plans it proposes still wait for an answer. Paseo's own toggle carries a shield icon, but a plugin provider has no field for one, so this one shows with the generic settings icon.
-
-**Auto-accept in new sessions** is where the toggle starts, and is off unless you turn it on. **In Bypass Permissions sessions** overrides it for sessions in that mode, or is the same as other sessions. These exist for agents nobody is watching: `paseo run` and anything built on it can pick a mode but not a toggle, so an overnight agent started in Bypass Permissions gets auto-accept only from this setting.
-
-An agent whose toggle you switch keeps that value, across suspensions and restarts, and stops following these settings. Every other agent reads them again at each permission prompt and whenever its mode changes, so a change here applies to open sessions too.
+**Auto Accept** approves Claude Code's permission prompts without a card.
+Questions and plans still wait for you.
+An agent whose toggle you switch keeps its own value; every other agent follows these settings, including open ones.
+Agents started with `paseo run` can pick a mode but not the toggle, so use **In Bypass Permissions sessions** to auto-accept for unattended agents.
 
 ## Troubleshooting
 
-**Diagnostics** runs the adapter's own host checks — Claude on the daemon's `PATH` above all. Paseo drops the adapter's stderr, so running them is the only way to read them; what Paseo itself makes of the provider is in the provider list and in `paseo plugin logs claude-tty`.
+Paseo discards the adapter's error output.
+When the provider is unavailable or a session won't start, run **Diagnostics** on the panel first.
 
-**Sessions** lists the adapter's saved sessions and the locks over them, each named after the Paseo agent holding it and saying when it was last prompted. That reads "last prompted" rather than "active" on purpose: the adapter stamps the time as a prompt starts, so a session an hour into one turn is still working. **Open** reveals the agent holding a session, and is there for as long as Paseo still lists one.
+A systemd daemon's `PATH` usually lacks `claude`.
+Set `CLAUDE_BIN` in the daemon's environment to Claude's absolute path, or add its directory to the daemon's `PATH`.
 
-**Stop** ends the adapter process holding an open session, which closes its Claude terminal. Nothing durable goes with it: the session file, the transcript, and the Paseo agent all survive, and the next prompt resumes the same Claude session.
-
-A PID outlives the process that earned it, so a stop first establishes that the process really is the one that took the lock — the right kind of process, and one that cannot have started after the lock it holds. Anything else is refused, named, and left running, including a process that has already exited and is waiting to be reaped. The adapter is given ten seconds to close the session itself before it is forced.
-
-A lock names the process holding a session; the adapter clears its own on exit and recovers one left by a dead process, so **Release lock** is only for a lock that outlived its process and is still in the way — including one left behind by a stop that had to force the process. Releasing is refused while the recorded process is alive. A session file that cannot be read can be moved aside rather than deleted, so the failure is still there to diagnose.
-
-The adapter's [troubleshooting table](../../apps/claude-tty-acp/README.md#troubleshooting) covers everything that goes wrong once a session is running. Its log is kept at `${XDG_STATE_HOME:-~/.local/state}/claude-tty-acp/logs/claude-tty-acp.log`, or under `CLAUDE_TTY_ACP_STATE_DIR` where that is set, because the daemon reads the adapter's stderr and keeps none of it.
-
-The provider goes away with the plugin, so removing it is `paseo plugin remove claude-tty`. What that leaves behind is the state directory, and the **Danger zone** deletes it: saved sessions stop resuming, it is refused while a session is open, and Claude's own configuration and transcripts are never touched.
+The adapter logs to `${XDG_STATE_HOME:-~/.local/state}/claude-tty-acp/logs/claude-tty-acp.log`, or under `CLAUDE_TTY_ACP_STATE_DIR` when that is set.
+For errors inside a running session, see the [adapter's troubleshooting](../../apps/claude-tty-acp/README.md#troubleshooting).
 
 ## Development
 
-```sh
-paseo plugin reload claude-tty
-paseo plugin logs claude-tty
-```
+For development instructions, see the [root README](../../README.md#development).
 
-```sh
-pnpm --filter @paseo-plugins/claude-tty typecheck
-pnpm --filter @paseo-plugins/claude-tty test
-```
+After changing the adapter, rebuild it with `pnpm --filter @paseo-plugins/claude-tty-acp build`.
+Sessions already running keep the old build.
 
-### A second copy, to develop against
+### A second copy to develop against
 
-A reload stops Claude in every session on the provider, because the plugin process is the transport
-for all of them. That is bearable for a session of your own and not for somebody else's, so the
-answer is a second copy under an ID of its own: the working sessions stay on `claude-tty`, and the
-copy being changed is reloaded as often as it likes.
+Reloading the plugin stops Claude in every session on its provider.
+To keep your working sessions alive, install a second copy under its own ID and reload only that one.
 
-In a second checkout — a `git worktree` of this one is enough:
+In a second checkout, such as a `git worktree` of this one:
 
 ```sh
 pnpm --filter @paseo-plugins/claude-tty identity claude-tty-dev
@@ -124,13 +111,8 @@ pnpm --filter @paseo-plugins/claude-tty-acp build
 paseo plugin add "/absolute/path/to/the/second/checkout/plugins/claude-tty"
 ```
 
-That one command writes the plugin ID, the provider ID, the label, the manifest and the adapter's
-state directory — the things two copies may not share. `identity --check` says whether they still
-agree, `identity` on its own prints them, and `identity claude-tty` puts the checkout back. Sessions,
-locks and logs are then under `~/.local/state/claude-tty-dev-acp/`, apart from the stable copy's, so
-**Danger zone** on one leaves the other alone.
+The copy shows up as **Claude TTY (dev)**, with its own provider and its own state under `~/.local/state/claude-tty-dev-acp/`.
+Agents can't move between the two providers, so start throwaway sessions on the dev one.
+`pnpm --filter @paseo-plugins/claude-tty identity claude-tty` stamps the checkout back.
 
-The two are separate providers, so an agent started on one cannot be moved to the other: start
-throwaway sessions on the dev provider and leave the work on the stable one.
-
-See [CLAUDE.md](./CLAUDE.md) for the constraints that are not obvious from the code.
+Design decisions are in [docs/adr](docs/adr).

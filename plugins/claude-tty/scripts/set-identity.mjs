@@ -39,7 +39,7 @@ const ADAPTER_CONSTANTS = path.join(REPO_ROOT, "apps", "claude-tty-acp", "src", 
 const BASE_ID = "claude-tty";
 const BASE_LABEL = "Claude TTY";
 
-/** The daemon's own rule for a plugin ID, quoted in plugins/claude-tty/CLAUDE.md. */
+/** The daemon's own rule for a plugin ID, which it also applies to provider IDs. */
 const ID_PATTERN = /^[a-z][a-z0-9._-]*$/;
 
 /** What the adapter's state directory is called for a given ID; shared/identity.ts computes the same. */

@@ -1,54 +1,29 @@
 # Working on this plugin
 
-Run `paseo plugin reload discord-rich-presence` after every change, then `paseo plugin logs discord-rich-presence`.
-The reload is the only compile check of the two bundles the daemon builds.
-Do this yourself; never leave it to the user.
+Run `paseo plugin reload discord-rich-presence` after every change, then read `paseo plugin logs discord-rich-presence`.
+The reload is the only compile check of the two bundles, so run it yourself rather than handing it to the user.
+If a reload hangs on `Stopping plugin` until the 60s timeout, kill the lingering `plugin-process.js` that is still connected to the daemon port.
 
-The plugin process holds its own daemon connection, which the contribution's cleanup closes.
-If a reload hangs on `Stopping plugin` until the 60s timeout, kill the lingering `plugin-process.js` connected to the daemon port.
+The server holds its own websocket to the daemon in `server/daemon.ts`; `docs/adr/0001-own-daemon-connection.md` says why.
 
-## Constraints that are not obvious
+New UI is built from the tokens in `client/theme.ts` and the controls in `client/ui.tsx`, which mirror Paseo's own controls in `packages/app/src/components/ui`.
+`client/preview.tsx` uses Discord's colours on purpose, because it shows what Discord will show.
 
-`paseo` only ever arrives on a context: an RPC handler's second argument, or a lifecycle hook's.
-Every lifecycle event is agent or workspace activity, and there is no event for the daemon starting, so nothing exists until a client calls in or someone does something.
-A presence that must be live before either therefore keeps its own daemon connection (`server/daemon.ts`), started from `contribute` in `index.server.ts`.
-A client id beginning with `plugin:` is routed to the daemon's internal plugin session and hangs forever with no error, so the connection is not named after the plugin id.
+## Traps
 
-No CommonJS dependency survives the daemon's compiler: `makeHermesInteropEager` rewrites esbuild's lazy interop getters into eager reads, so anything built by tsup or esbuild exports `undefined` and fails as `class extends value undefined`.
-Pre-bundling does not help. That is why the Discord IPC client is written out in `server/ipc.ts`.
+**The daemon client id.** The daemon routes any client id starting with `plugin:` to its internal plugin session, and the websocket handshake then hangs forever without an error.
+Keep `DAEMON_CLIENT_ID` free of that prefix.
 
-`workspace.activityAt` is null in practice, so the daemon's `activity_at` sort is not a ranking and the model ranks workspaces itself.
-A workspace's `name` is often a title an agent generated, which is what the detail levels are for.
-`agents.list({ scope: "active" })` still returns closed sessions.
-The focused workspace is unreadable: the app heartbeats it, but the daemon keeps it private to the session that sent it.
+**CommonJS dependencies.** The daemon's compiler rewrites esbuild's lazy CommonJS interop getters into eager reads (`makeHermesInteropEager`).
+A CommonJS package, including anything built by tsup or esbuild, then exports `undefined` and fails at load with `class extends value undefined`; pre-bundling it does not help.
+Use an ESM package, or write the code out yourself, as `server/ipc.ts` does for Discord's IPC protocol.
 
-## Settings
+**Daemon data.** Three things the daemon's API does not tell you:
+- `workspace.activityAt` arrives as null, so the daemon's `activity_at` sort ranks nothing and `rankWorkspaces` does the ranking.
+- `agents.list({ scope: "active" })` still returns closed and archived sessions.
+- The workspace focused in the app cannot be read: the daemon keeps the app's heartbeat private to the session that sent it.
 
-`shared/settings.ts` defines the settings document; every field has a default.
-The schema is strict, so a bad document reads as `invalid` as a whole; `server/followed-settings.ts` decides what the service does with that.
-The server can only read the settings.
-The settings screen saves through `useSettings`; Command Center items have no React tree and save through `client/settings-writes.ts`.
+**New settings fields.** Give every field added to `shared/settings.ts` a `.default()`.
+Without one, every document saved before the field existed reads as `invalid`: the service keeps its previous settings and the panel shows an error instead of the settings.
 
-## The panel is styled off paseo's own scale
-
-The host hands the client colours but no metrics, so `client/theme.ts` restates paseo's spacing, type, and radius scale, and fills in only the shades above `surface2` that the host keeps to itself.
-Build new controls out of those tokens and out of `client/ui.tsx`, which mirrors the geometry of paseo's own controls in `packages/app/src/components/ui`.
-Icons come from `@getpaseo/plugin/client/react-native`, by Lucide name; nothing here draws its own.
-The preview keeps Discord's colours instead, because it stands for what the other side sees rather than for the theme paseo is wearing.
-`client/artwork.ts` is generated by `scripts/render-assets.sh`, not edited by hand.
-
-## A module's directory picks its bundle
-
-`index.client.tsx` and `index.server.ts` are compiled separately, and the directory a module sits in decides which bundle it joins: `client/` the app's, `server/` the daemon's, `shared/` both.
-Reaching across that line is a compile error rather than something the compiler quietly filters away, so the entries import only their own side, and a module left at the plugin root fails the build.
-`shared/` is the strictest of the three: no Node, no React, and no runtime-specific SDK entry, because both bundles have to be able to hold it.
-Each entry default-exports one contribution function returning cleanup, and RPC names must match `^[a-z][a-z0-9._-]*$`.
-
-## Tests
-
-`pnpm test` is `node --test "{client,server,shared}/**/*.test.ts"` through Node's type stripping, so no TypeScript that has to be emitted and relative imports keep their `.ts` extension.
-`shared/fixtures/` holds real daemon payloads with the paths scrubbed, read relative to `import.meta.dirname`.
-
-`paseo plugin install` is a silent no-op against this daemon for any directory, so the plugin is registered by hand in `~/.paseo/config.json` and picked up on the next daemon start.
-To exercise a change without restarting the daemon, compile `index.server.ts` with the daemon's own `compilePlugin` and evaluate the bundle the way `plugin-process.js` does.
-Point `PASEO_HOME` at a throwaway daemon, or you will change the real settings.
+**Tests run on Node's type stripping.** Keep the `.ts` extension on relative imports, and write erasable TypeScript in any module a test imports.

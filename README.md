@@ -1,79 +1,111 @@
 # Paseo plugins and apps
 
-Extensions for [Paseo](https://github.com/getpaseo/paseo), organized in a pnpm workspace.
+My plugins for [Paseo](https://github.com/getpaseo/paseo).
 
-| App | Description |
-| --- | --- |
+## Overview
+
+| Plugin                                                 | Description                                                                                            |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| [Discord Rich Presence](plugins/discord-rich-presence) | Show your current Paseo activity on Discord.                                                           |
+| [Catppuccin theme](plugins/catppuccin-theme)           | Add all four Catppuccin flavours as app themes.                                                        |
+| [Claude TTY](plugins/claude-tty)                       | Offer the Claude TTY ACP adapter as a Paseo provider, and manage it on the daemon host.                |
+| [Guided Review](plugins/guided-review)                 | Show a trunk-first guide to a pull request or merge request, and build your draft review alongside it. |
+
+| ACP                                   | Description                                                                |
+| ------------------------------------- | -------------------------------------------------------------------------- |
 | [Claude TTY ACP](apps/claude-tty-acp) | Run genuine interactive Claude Code sessions in Paseo's native agent view. |
 
-| Plugin | Description |
-| --- | --- |
-| [Discord Rich Presence](plugins/discord-rich-presence) | Show your current Paseo activity on Discord. |
-| [Catppuccin theme](plugins/catppuccin-theme) | Add all four Catppuccin flavours as app themes. |
-| [Claude TTY](plugins/claude-tty) | Offer the Claude TTY ACP adapter as a Paseo provider, and manage it on the daemon host. |
-| [Guided Review](plugins/guided-review) | Show a trunk-first guide to a pull request or merge request, and build your draft review alongside it. |
+## Installation
 
-Each app and plugin has its own README with installation, settings, and development details.
+Check each plugin's README for the Paseo version and anything else it may depend on.
+A plugin installed from GitHub or a registry can be updated with `paseo plugin update <id>`.
+From GitHub that installs the latest commit on `main`, and from a registry the revision the registry last approved.
 
-## Local development
-
-Install dependencies and check every package from the repository root:
-
-```sh
-pnpm install
-pnpm typecheck
-pnpm test
-```
-
-Enable Paseo plugins, then install each plugin by its directory in this repository:
+### From GitHub (recommended)
 
 ```sh
 paseo plugin add github:sleeyax/paseo-plugins:plugins/discord-rich-presence
-paseo plugin ls
 ```
 
-Paseo clones the repository itself and tracks the default branch, so `paseo plugin update <id>` keeps an installation current and `paseo plugin update <id> --check` previews what it would install. Plugins published to the [Paseo plugin registry](https://paseo.sh/plugins) also install by their registry ID, which their READMEs give.
+### From a registry
 
-Two plugins ask something of the host: `claude-tty` runs an adapter that has to be built, and `guided-review` bundles Paseo's syntax highlighter, an npm dependency. Installing and updating either runs the `build` commands in its manifest, so both need `pnpm` on the daemon's `PATH`; `claude-tty` can instead take a path to an adapter built elsewhere, in its own **Adapter executable** setting.
+Some plugins are also listed in a plugin registry:
 
-To work on a plugin, install it from the working copy instead. A directory installation runs no `build`, so build what it needs first:
+- [Paseo Community Plugins](https://paseo.sh/plugins): install by the registry ID the plugin's README gives, such as `paseo plugin add sleeyax/discord-rich-presence`.
+  It needs Paseo 0.11 or newer.
+- [Paseo Cafe](https://paseo.cafe): copy the install command from the plugin's page.
 
-```sh
-paseo plugin add "/absolute/path/to/paseo-plugins/plugins/discord-rich-presence"
-```
+### From source
 
-After making changes, run `paseo plugin reload <id>`. Paseo does not hot-reload plugins, and reloading is the compile check for the client and server bundles built from `index.client.tsx` and `index.server.ts`.
+To run changes of your own, install from a clone instead:
 
-## Releasing a plugin
+1. Clone this repository and install its dependencies:
 
-A plugin's `version` in its own `package.json` is its update identity: [Paseo Cafe](https://github.com/paseo-cafe/paseo-cafe) compares it against the installed copy's, and only a higher version offers an update.
-Until it moves, installations stay on the old code however many commits land here.
+   ```sh
+   git clone https://github.com/sleeyax/paseo-plugins.git
+   cd paseo-plugins
+   pnpm install
+   ```
 
-[release-please](https://github.com/googleapis/release-please) does the bumping, from the conventional commits on `main`: a `feat` takes a minor, a `fix` takes a patch, and a `chore` or `docs` releases nothing.
-It keeps a single release pull request open and adds to it as more commits land, so a release can cover one pull request or a batch of them.
-Merging it is the release: the new versions and each package's `CHANGELOG.md` are written, tagged, and published as GitHub releases.
-Nothing reaches npm, since every package here is private.
+2. Run the `build` commands in the plugin's `paseo-plugin.json` from its directory, if it has any.
 
-Which package a commit bumps comes from the files it touches rather than its scope, so keep a change inside the plugin it belongs to.
-`claude-tty` and the `claude-tty-acp` adapter it runs are versioned together, because a change to the adapter changes what the plugin ships.
+3. Install the plugin from the clone:
 
-## Skills
+   ```sh
+   paseo plugin add "/absolute/path/to/paseo-plugins/plugins/discord-rich-presence"
+   ```
 
-`skills/` holds agent skills for working on this repository, in the [Agent Skills](https://agentskills.io) format, so any harness that reads them can use them.
-`.claude/skills/` and `.agents/skills/` are symlinks into it — the first is where Claude Code looks, the second is where Codex, Cursor, OpenCode and GitHub Copilot do — and editing the file under `skills/` updates every harness at once.
+To update:
 
-| Skill | Description |
-| --- | --- |
-| `update-plugins` | Rebuild the apps and reload the plugins this host has installed from this checkout. |
+- Run `git pull`
+- Repeat the build steps
+- Run `paseo plugin reload <id>`.
+
+Alternatively, run the `update-plugins` [skill](#skills). It does all the update steps above for every plugin installed from the clone.
+
+## Development
+
+Install the plugin you are working on [from source](#from-source), then:
+
+1. After each change, reload the plugin, and read its logs if something broke:
+
+   ```sh
+   paseo plugin reload <name>
+   paseo plugin logs <name>
+   ```
+
+2. Typecheck and test the package you are working on:
+
+   ```sh
+   pnpm --filter @paseo-plugins/<name> typecheck
+   pnpm --filter @paseo-plugins/<name> test
+   ```
+
+   Or every package at once, from the repository root:
+
+   ```sh
+   pnpm typecheck
+   pnpm test
+   ```
+
+`<name>` is the package's directory name, which is also its plugin ID.
+
+Each plugin's README has anything else specific to it in its own Development section.
+
+### Skills
+
+This repository comes with its own set of local skills to aid in development:
+
+| Skill                 | Description                                                                                                                                                                                                   |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `update-plugins`      | Rebuild the apps and reload the plugins this host has installed from this checkout.                                                                                                                           |
 | `adopt-paseo-release` | Review the Paseo releases since the last review and file an issue with what the plugins should adopt. Runs only when invoked by name: `/adopt-paseo-release` in Claude Code, `$adopt-paseo-release` in Codex. |
 
-Working in this repository needs no installation; the symlinks are committed. To use a skill from another checkout, install it by name:
+### Releasing a plugin
 
-```sh
-npx skills add sleeyax/paseo-plugins --skill update-plugins
-```
+Releases are automatic, so there is no version to bump or changelog to write by hand.
+[release-please](https://github.com/googleapis/release-please) reads the conventional commits on `main` and keeps a release pull request open; merging it releases.
 
-## Plugin settings
+A `feat` releases a minor version, a `fix` a patch version, and `chore` or `docs` nothing. A breaking change, marked with `!` after the type (`feat!: ...`) or a `BREAKING CHANGE:` footer, releases a major version. To release a specific version instead, add a `Release-As: 1.0.0` footer to the commit.
 
-Plugins keep their settings in `$PASEO_HOME/plugin-settings/<plugin-id>/`, managed by Paseo and removed with the plugin.
-Versions from before Paseo 0.9 used `${XDG_CACHE_HOME:-~/.cache}/paseo-plugins/<plugin-id>/` instead; each plugin's README says whether it carries those settings over.
+The package a commit releases is the one whose files it touches, so try to keep each commit inside one package.
