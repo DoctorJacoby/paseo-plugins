@@ -44,6 +44,7 @@ paseo plugin ls --json
 git status --short --branch
 git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>&1
 [ -n "$PASEO_AGENT_ID" ] && paseo inspect "$PASEO_AGENT_ID" --json
+[ -n "$PASEO_AGENT_ID" ] && jq -r .workspaceId "${PASEO_HOME:-$HOME/.paseo}"/agents/*/"$PASEO_AGENT_ID".json
 ```
 
 From `ls --json` take the `id` and `path` of every installed plugin. Keep the ones whose `path` is inside this repository; drop the rest.
@@ -57,6 +58,7 @@ If nothing survives the filter, say so and stop.
 
 `PASEO_AGENT_ID` is set when Paseo hosts this session, and `Provider` in the `inspect` output names the provider it runs on.
 A plugin whose `id` equals that provider is the one hosting this session: build it like the rest, but leave it out of the reloads in step 4.
+The `jq` line reads the workspace this session belongs to from the daemon's agent record, because `inspect` leaves it out; step 4 needs it for that plugin's terminal.
 
 ### 2. Pull, but only when it is free
 
@@ -96,9 +98,12 @@ paseo plugin reload <id> --json
 Skip the plugin hosting this session, if step 1 found one, and type its reload into a terminal of this workspace without pressing Enter, so the user runs it once they are done with the session:
 
 ```sh
-paseo terminal create --cwd "$PWD" --name "reload <id>"
-paseo terminal send-keys --literal "reload <id>" 'paseo plugin reload <id> --json'
+terminal=$(paseo terminal create --workspace <workspaceId> --cwd "$PWD" --name "reload <id>" -q)
+paseo terminal send-keys --literal "$terminal" 'paseo plugin reload <id> --json'
 ```
+
+Pass the workspace from step 1 rather than relying on `--cwd`: given a directory alone, the daemon picks one of the workspaces open on it, and with several open on this checkout that is often not the user's. Address the terminal by the ID `create` prints, since a name can match a leftover terminal from an earlier run.
+If step 1 found no agent record, drop `--workspace` and name the workspace the terminal landed in, from `paseo terminal ls --json` and `paseo workspace ls --json`, so the user knows where to look.
 
 The daemon owns that terminal, so it outlives the sessions the reload closes.
 
