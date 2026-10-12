@@ -38,18 +38,29 @@ To guide the branch you already have checked out, choose **Guided Review: guide 
 If your branch is clean and behind the PR/MR, the plugin fast-forwards it and writes the guide in your workspace.
 Otherwise it leaves your branch alone and uses a new workspace.
 
-### Pick from your review requests
+### Pick from your review requests or your own
 
-**Assigned to me for review** lists the open pull requests and merge requests you are a reviewer of, on github.com and on every GitLab host `glab` is logged in to.
+The start tab lists open pull requests and merge requests in two tabs.
+**Assigned to me** lists the ones you are a reviewer of, on github.com and on every GitLab host `glab` is logged in to.
+**Authored by me** lists your own on the same hosts, drafts included.
+Its review status combines your reviewers' latest verdicts, and changes requested by any reviewer outweigh approvals.
+An approval GitLab removes, or GitHub dismisses, when you push shows as an approval reset.
+On GitLab, an approval its reviewer revokes shows as an approval reset too.
+A merge request you wrote and review is on both tabs, with the one review you started from either.
 
 - Select **Review** to start a review, **Open** to open one, or **Continue** to reopen one whose workspace was closed.
-- Filter by forge, by state under **States**, with **Needs my attention** or **Hide drafts**, or search.
+- Filter by forge, by state under **States**, with **Needs my attention** or with **Hide drafts**, or search.
+  On **Authored by me**, the search also matches reviewers.
+  On **Authored by me**, **Needs my attention** keeps changes requested, a review since your last push, and failing CI.
 - Select a column heading to sort, and **Columns** to choose what the table shows.
+- Each tab keeps its own filters, sort, columns and search.
 - Tick a row's box to check it off while it waits on someone else.
-  It comes back when someone pushes to it, asks you to review again, or GitLab resets your approval.
-- Select **Refresh** to list again.
+  On **Assigned to me**, it comes back when someone pushes to it, asks you to review again, or GitLab resets your approval.
+  On **Authored by me**, it comes back when a reviewer reviews again or its review status changes, an approval reset included, but not when you push.
+  A check-off on one tab leaves the other tab alone.
+- Select **Refresh** to list both tabs again.
 
-The count beside **Guided Review** in the sidebar is how many reviews need your attention.
+The count beside **Guided Review** in the sidebar is how many review requests on **Assigned to me** need your attention.
 
 If a review workspace shows no panel, select **Open Guided Review** in the workspace's header.
 

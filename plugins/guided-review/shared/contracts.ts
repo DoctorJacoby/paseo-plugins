@@ -5,7 +5,7 @@ import { CommentOriginSchema, DraftListSchema, DraftLocationSchema, LinkedDraftS
 import { ForeignWorkSchema, REVIEW_SCOPES } from "./foreign-work.ts";
 import { GuideStateSchema } from "./guide.ts";
 import { InboxPreferencesSchema } from "./inbox-preferences.ts";
-import { CheckOffSchema, InboxSchema, LocalReviewSchema } from "./inbox.ts";
+import { CheckOffChangeSchema, InboxSchema, LocalReviewSchema } from "./inbox.ts";
 import { GuideProgressSchema } from "./progress.ts";
 import { ReviewHeaderSchema, START_PHASES } from "./review-header.ts";
 import { SubmitResultSchema, VerdictOptionSchema, VerdictSchema } from "./submit.ts";
@@ -119,10 +119,10 @@ export const saveInboxPreferences = defineRpc({
   output: InboxPreferencesSchema,
 });
 
-/** Checks a change request off the review list as of what the row showed, or with null unchecks it. */
+/** Checks a change request off one tab of the review list as of what the row showed, or with null unchecks it. */
 export const setCheckedOff = defineRpc({
   name: "guided-review.inbox.check-off",
-  input: z.object({ url: z.string(), checkOff: CheckOffSchema.nullable() }),
+  input: CheckOffChangeSchema,
   output: z.null(),
 });
 

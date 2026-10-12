@@ -1182,7 +1182,7 @@ test("reads every host glab reports, logged in or not, and why glab cannot use o
 test("lists the open MRs the viewer reviews on each host glab is logged in to, after checking its version", async () => {
   const { forge, run } = forgeReplaying(LIST_REVIEWS);
 
-  const hosts = await forge.listReviewRequests();
+  const hosts = await forge.listChangeRequests();
 
   assert.deepEqual(
     run.calls.map((call) => call.args),
@@ -1195,8 +1195,8 @@ test("lists the open MRs the viewer reviews on each host glab is logged in to, a
   assert.equal(hosts.length, 1);
   const [host] = hosts;
   assert.equal(host?.error, null);
-  assert.equal(host?.truncated, false);
-  assert.deepEqual(host?.requests[0], {
+  assert.deepEqual(host?.truncated, { assigned: false, authored: false });
+  assert.deepEqual(host?.assigned[0], {
     forge: "gitlab",
     host: "gitlab.com",
     project: "example-group/service",
@@ -1222,8 +1222,8 @@ test("lists the open MRs the viewer reviews on each host glab is logged in to, a
 test("an MR reads by the viewer's own reviewer record, changed when the head commit is newer than it", async () => {
   const { forge } = forgeReplaying(LIST_REVIEWS);
 
-  const [host] = await forge.listReviewRequests();
-  const summary = host?.requests.map(({ number, state, changedSinceReview, ci, author, isDraft }) => ({ number, state, changedSinceReview, ci, author, isDraft }));
+  const [host] = await forge.listChangeRequests();
+  const summary = host?.assigned.map(({ number, state, changedSinceReview, ci, author, isDraft }) => ({ number, state, changedSinceReview, ci, author, isDraft }));
 
   assert.deepEqual(summary, [
     { number: 12, state: "requested", changedSinceReview: null, ci: "failure", author: "author", isDraft: false },
@@ -1234,50 +1234,179 @@ test("an MR reads by the viewer's own reviewer record, changed when the head com
   ]);
 });
 
+test("lists the viewer's own open MRs, drafts included, with where their reviewers stand, in the same query as the MRs they review", async () => {
+  const { forge, run } = forgeReplaying(LIST_REVIEWS);
+
+  const [host] = await forge.listChangeRequests();
+
+  assert.equal(run.calls.filter((call) => call.args[1] === "graphql").length, 1);
+  assert.match(REVIEW_LIST_QUERY, /authoredMergeRequests\(state: opened, first: 100, sort: UPDATED_DESC\)/);
+  assert.deepEqual(host?.authored, [
+    {
+      forge: "gitlab",
+      host: "gitlab.com",
+      project: "example-group/service",
+      number: 15,
+      url: "https://gitlab.com/example-group/service/-/merge_requests/15",
+      title: "Stream large uploads to storage",
+      author: "reviewer",
+      isDraft: false,
+      createdAt: "2026-10-01T08:00:00Z",
+      updatedAt: "2026-10-05T09:30:00Z",
+      headSha: "6".repeat(40),
+      additions: 210,
+      deletions: 44,
+      fileCount: 7,
+      ci: "success",
+      pendingDrafts: null,
+      status: "changes-requested",
+      reviewers: [
+        { name: "maintainer", state: "approved" },
+        { name: "designer", state: "changes-requested" },
+        { name: "backend-lead", state: "requested" },
+        { name: "passer-by", state: "approved" },
+      ],
+      reviewedSinceLastPush: true,
+      latestReviewAt: "2026-10-05T10:15:00Z",
+    },
+    {
+      forge: "gitlab",
+      host: "gitlab.com",
+      project: "example-group/sub/web",
+      number: 43,
+      url: "https://gitlab.com/example-group/sub/web/-/merge_requests/43",
+      title: "Draft: Resume an interrupted upload",
+      author: "reviewer",
+      isDraft: true,
+      createdAt: "2026-10-02T08:00:00Z",
+      updatedAt: "2026-10-02T08:10:00Z",
+      headSha: "7".repeat(40),
+      additions: 0,
+      deletions: 0,
+      fileCount: 0,
+      ci: null,
+      pendingDrafts: null,
+      status: "unreviewed",
+      reviewers: [],
+      reviewedSinceLastPush: false,
+      latestReviewAt: null,
+    },
+  ]);
+});
+
+type Interaction = { reviewState: string; approved: boolean; updatedAt: string };
+
+/** The authored MR !15 as GitLab lists it, with these reviewer records and approvers in place of the fixture's. */
+async function authored15(mr: { reviewers?: Record<string, Interaction>; approvedBy?: string[]; pushedAt?: string | null }) {
+  const answer = JSON.parse(fixture("review-list.json"));
+  const node = answer.data.currentUser.authoredMergeRequests.nodes[0];
+  node.reviewers.nodes = Object.entries(mr.reviewers ?? {}).map(([username, mergeRequestInteraction]) => ({ username, mergeRequestInteraction }));
+  node.approvedBy.nodes = (mr.approvedBy ?? []).map((username) => ({ username }));
+  if (mr.pushedAt !== undefined) node.mergeRequestDiffs.nodes = mr.pushedAt === null ? [] : [{ createdAt: mr.pushedAt }];
+  const { forge } = forgeReplaying([AUTH_STATUS_ALL, version("19.5.0-pre"), { stdout: JSON.stringify(answer) }]);
+  return (await forge.listChangeRequests())[0]!.authored[0]!;
+}
+
+/** The fixture's head commit of !15 is dated 2026-10-05T09:00 and was pushed at 09:20. */
+const BEFORE_HEAD = "2026-10-04T12:00:00Z";
+const BEFORE_PUSH = "2026-10-05T09:10:00Z";
+const AFTER_HEAD = "2026-10-05T11:00:00Z";
+const interaction = (reviewState: string, updatedAt: string): Interaction => ({ reviewState, approved: reviewState === "APPROVED", updatedAt });
+
+test("an approval GitLab took back reads as an approval reset, and one still standing beats it", async () => {
+  const reset = await authored15({ reviewers: { maintainer: interaction("UNAPPROVED", AFTER_HEAD) } });
+  const standing = await authored15({ reviewers: { maintainer: interaction("UNAPPROVED", AFTER_HEAD), lead: interaction("APPROVED", AFTER_HEAD) }, approvedBy: ["lead"] });
+
+  assert.equal(reset.status, "approval-reset");
+  assert.deepEqual(reset.reviewers, [{ name: "maintainer", state: "unapproved" }]);
+  assert.equal(reset.reviewedSinceLastPush, false, "a reset is no review");
+  assert.equal(reset.latestReviewAt, null);
+  assert.equal(standing.status, "approved");
+});
+
+test("reviewers asked and none answered is waiting, and a review without a verdict is commented", async () => {
+  const waiting = await authored15({ reviewers: { maintainer: interaction("UNREVIEWED", AFTER_HEAD), designer: interaction("REVIEW_STARTED", AFTER_HEAD) } });
+  const commented = await authored15({ reviewers: { maintainer: interaction("UNREVIEWED", AFTER_HEAD), designer: interaction("REVIEWED", BEFORE_HEAD) } });
+
+  assert.equal(waiting.status, "waiting");
+  assert.equal(waiting.reviewedSinceLastPush, false);
+  assert.equal(waiting.latestReviewAt, null);
+  assert.equal(commented.status, "commented");
+  assert.equal(commented.reviewedSinceLastPush, false, "the review is older than the head");
+  assert.equal(commented.latestReviewAt, BEFORE_HEAD);
+});
+
+test("the author's own reviewer record and approval are not a review of their MR", async () => {
+  const own = await authored15({ reviewers: { Reviewer: interaction("APPROVED", AFTER_HEAD) }, approvedBy: ["reviewer"] });
+
+  assert.equal(own.status, "unreviewed");
+  assert.deepEqual(own.reviewers, []);
+  assert.equal(own.latestReviewAt, null);
+});
+
+test("a review between the head commit and its push is not one since the push", async () => {
+  const beforePush = await authored15({ reviewers: { designer: interaction("REQUESTED_CHANGES", BEFORE_PUSH) } });
+
+  assert.equal(beforePush.reviewedSinceLastPush, false);
+});
+
+test("whether a review came after the push is unknown when GitLab gives no version of the head", async () => {
+  const undated = await authored15({ reviewers: { designer: interaction("REQUESTED_CHANGES", AFTER_HEAD) }, pushedAt: null });
+
+  assert.equal(undated.status, "changes-requested");
+  assert.equal(undated.reviewedSinceLastPush, null);
+  assert.equal(undated.latestReviewAt, AFTER_HEAD);
+});
+
 test("a host glab is not logged in to, or one older than 19.2, comes back with its error and the others listed", async () => {
   const report = { exitCode: 1, stderr: fixture("auth-status-all-unreachable.stderr") + fixture("auth-status-all.stderr") };
   const { forge } = forgeReplaying([report, version("19.5.0-pre"), { stdout: fixture("review-list.json") }]);
 
-  const hosts = await forge.listReviewRequests();
+  const hosts = await forge.listChangeRequests();
 
   assert.deepEqual(
-    hosts.map(({ host, error, requests }) => ({ host, error, count: requests.length })),
+    hosts.map(({ host, error, assigned, authored }) => ({ host, error, counts: [assigned.length, authored.length] })),
     [
       {
         host: "gitlab.example.invalid",
         error:
           'glab is not logged in to gitlab.example.invalid (API call failed: Get "https://gitlab.example.invalid/api/v4/user": dial tcp: lookup gitlab.example.invalid: no such host). Run `glab auth login --hostname gitlab.example.invalid` on the daemon\'s host.',
-        count: 0,
+        counts: [0, 0],
       },
-      { host: "gitlab.com", error: null, count: 5 },
+      { host: "gitlab.com", error: null, counts: [5, 2] },
     ],
   );
 
   const { forge: old } = forgeReplaying([AUTH_STATUS_ALL, version("18.11.2-ee")]);
-  assert.deepEqual(await old.listReviewRequests(), [
-    { forge: "gitlab", host: "gitlab.com", requests: [], truncated: false, error: "gitlab.com runs GitLab 18.11.2-ee; listing your reviews needs 19.2 or newer." },
+  assert.deepEqual(await old.listChangeRequests(), [
+    { forge: "gitlab", host: "gitlab.com", assigned: [], authored: [], truncated: { assigned: false, authored: false }, error: "gitlab.com runs GitLab 18.11.2-ee; listing your reviews needs 19.2 or newer." },
   ]);
 });
 
-test("a GraphQL answer with errors and no user is the host's error, and more MRs than a page mark it truncated", async () => {
+test("a GraphQL answer with errors and no user is the host's error, and more MRs than a page mark that list truncated", async () => {
   const failed = JSON.stringify({ data: { currentUser: null }, errors: [{ message: "Query has complexity of 301, which exceeds max complexity of 250" }] });
   const { forge } = forgeReplaying([AUTH_STATUS_ALL, version("19.5.0-pre"), { stdout: failed }]);
   assert.equal(
-    (await forge.listReviewRequests())[0]?.error,
+    (await forge.listChangeRequests())[0]?.error,
     "GitLab on gitlab.com did not list your reviews: Query has complexity of 301, which exceeds max complexity of 250.",
   );
 
   const more = JSON.parse(fixture("review-list.json"));
   more.data.currentUser.reviewRequestedMergeRequests.pageInfo.hasNextPage = true;
   const { forge: paged } = forgeReplaying([AUTH_STATUS_ALL, version("19.5.0-pre"), { stdout: JSON.stringify(more) }]);
-  assert.equal((await paged.listReviewRequests())[0]?.truncated, true);
+  assert.deepEqual((await paged.listChangeRequests())[0]?.truncated, { assigned: true, authored: false });
+
+  const mine = JSON.parse(fixture("review-list.json"));
+  mine.data.currentUser.authoredMergeRequests.pageInfo.hasNextPage = true;
+  const { forge: pagedMine } = forgeReplaying([AUTH_STATUS_ALL, version("19.5.0-pre"), { stdout: JSON.stringify(mine) }]);
+  assert.deepEqual((await pagedMine.listChangeRequests())[0]?.truncated, { assigned: false, authored: true });
 });
 
 test("a host listed as logged in is not checked again before reading an MR on it", async () => {
   const head = { stdout: JSON.stringify({ state: "opened", description: null, sha: "a".repeat(40), diff_refs: { head_sha: "a".repeat(40) } }) };
   const { forge, run } = forgeReplaying([...LIST_REVIEWS, { stdout: fixture("project.json") }, head]);
 
-  await forge.listReviewRequests();
+  await forge.listChangeRequests();
   run.calls.length = 0;
 
   assert.deepEqual(await forge.fetchHead(MR_3931), { headSha: "a".repeat(40), state: "open", description: "" });

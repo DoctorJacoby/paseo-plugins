@@ -203,6 +203,119 @@
             }
           }
         ]
+      },
+      "authoredMergeRequests": {
+        "pageInfo": {
+          "hasNextPage": false
+        },
+        "nodes": [
+          {
+            "webUrl": "https://gitlab.com/example-group/service/-/merge_requests/15",
+            "title": "Stream large uploads to storage",
+            "draft": false,
+            "createdAt": "2026-10-01T08:00:00Z",
+            "updatedAt": "2026-10-05T09:30:00Z",
+            "diffHeadSha": "6666666666666666666666666666666666666666",
+            "author": {
+              "username": "reviewer"
+            },
+            "diffStatsSummary": {
+              "additions": 210,
+              "deletions": 44,
+              "fileCount": 7
+            },
+            "headPipeline": {
+              "status": "SUCCESS"
+            },
+            "commits": {
+              "nodes": [
+                {
+                  "sha": "6666666666666666666666666666666666666666",
+                  "committedDate": "2026-10-05T09:00:00+00:00"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "maintainer",
+                  "mergeRequestInteraction": {
+                    "reviewState": "APPROVED",
+                    "approved": true,
+                    "updatedAt": "2026-10-05T10:15:00Z"
+                  }
+                },
+                {
+                  "username": "designer",
+                  "mergeRequestInteraction": {
+                    "reviewState": "REQUESTED_CHANGES",
+                    "approved": false,
+                    "updatedAt": "2026-10-03T14:00:00Z"
+                  }
+                },
+                {
+                  "username": "backend-lead",
+                  "mergeRequestInteraction": {
+                    "reviewState": "UNREVIEWED",
+                    "approved": false,
+                    "updatedAt": "2026-10-01T09:00:00Z"
+                  }
+                }
+              ]
+            },
+            "approvedBy": {
+              "nodes": [
+                {
+                  "username": "maintainer"
+                },
+                {
+                  "username": "passer-by"
+                }
+              ]
+            },
+            "mergeRequestDiffs": {
+              "nodes": [
+                {
+                  "createdAt": "2026-10-05T09:20:00Z"
+                }
+              ]
+            }
+          },
+          {
+            "webUrl": "https://gitlab.com/example-group/sub/web/-/merge_requests/43",
+            "title": "Draft: Resume an interrupted upload",
+            "draft": true,
+            "createdAt": "2026-10-02T08:00:00Z",
+            "updatedAt": "2026-10-02T08:10:00Z",
+            "diffHeadSha": null,
+            "author": {
+              "username": "reviewer"
+            },
+            "diffStatsSummary": null,
+            "headPipeline": null,
+            "commits": {
+              "nodes": [
+                {
+                  "sha": "7777777777777777777777777777777777777777",
+                  "committedDate": "2026-10-02T08:00:00+00:00"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": []
+            },
+            "approvedBy": {
+              "nodes": []
+            },
+            "mergeRequestDiffs": {
+              "nodes": [
+                {
+                  "createdAt": "2026-10-02T08:05:00Z"
+                }
+              ]
+            }
+          }
+        ]
       }
     }
   }

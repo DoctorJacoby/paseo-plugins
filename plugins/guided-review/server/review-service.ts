@@ -19,7 +19,7 @@ import type {
   SyntaxColors,
 } from "../shared/contracts.ts";
 import type { FileDiff } from "../shared/diff.ts";
-import type { CheckOff, Inbox } from "../shared/inbox.ts";
+import type { CheckOffChange, Inbox } from "../shared/inbox.ts";
 import type { InboxPreferences } from "../shared/inbox-preferences.ts";
 import type { CommentOrigin, DraftList, DraftLocation, LinkedDraft } from "../shared/drafts.ts";
 import type { CoveredCode, GuideState, LayeredGuide } from "../shared/guide.ts";
@@ -153,8 +153,8 @@ export class ReviewService {
     return this.#inboxPreferences.save(preferences);
   }
 
-  async setCheckedOff({ url, checkOff }: { url: string; checkOff: CheckOff | null }): Promise<null> {
-    await this.#checkOffs.set(url, checkOff);
+  async setCheckedOff(change: CheckOffChange): Promise<null> {
+    await this.#checkOffs.set(change);
     return null;
   }
 

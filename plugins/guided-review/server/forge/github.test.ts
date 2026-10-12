@@ -5,6 +5,7 @@ import test from "node:test";
 import { fakeCommandRunner, type FakeCommandRunner, type ScriptedResult } from "../fake-command-runner.ts";
 import {
   ADD_THREAD_MUTATION,
+  AUTHORED_SEARCH_QUERY,
   COMMIT_PULL_REQUESTS_QUERY,
   createGitHubForge,
   MAX_COMPARE_FILES,
@@ -716,10 +717,19 @@ test("a discussion on the pull request is a comment on its conversation, as GitH
   assert.deepEqual(run.calls[0]?.args, ["api", "--hostname", "github.com", "--method", "POST", "repos/sleeyax/paseo-plugins/issues/105/comments", "--input", "-"]);
 });
 
-test("lists what the viewer is asked to review and what they reviewed, as two searches on github.com", async () => {
-  const { forge, run } = forgeReplaying([{ stdout: fixture("review-search-requested.json") }, { stdout: fixture("review-search-reviewed.json") }]);
+/** A listing's three searches as gh answers them, in the order they go out: asked to review, reviewed, authored. */
+function searches(answers: { requested?: ScriptedResult; reviewed?: ScriptedResult; authored?: ScriptedResult } = {}): ScriptedResult[] {
+  return [
+    answers.requested ?? { stdout: fixture("review-search-requested.json") },
+    answers.reviewed ?? { stdout: fixture("review-search-reviewed.json") },
+    answers.authored ?? { stdout: fixture("review-search-authored.json") },
+  ];
+}
 
-  const [host, ...others] = await forge.listReviewRequests();
+test("lists what the viewer is asked to review, what they reviewed and what they authored, as three searches on github.com", async () => {
+  const { forge, run } = forgeReplaying(searches());
+
+  const [host, ...others] = await forge.listChangeRequests();
 
   assert.deepEqual(others, []);
   assert.deepEqual(
@@ -727,19 +737,21 @@ test("lists what the viewer is asked to review and what they reviewed, as two se
     [
       ["api", "graphql", "--hostname", "github.com", "--input", "-"],
       ["api", "graphql", "--hostname", "github.com", "--input", "-"],
+      ["api", "graphql", "--hostname", "github.com", "--input", "-"],
     ],
   );
   assert.deepEqual(graphqlCalls(run), [
     { query: REVIEW_SEARCH_QUERY, variables: { query: REVIEW_SEARCHES.requested } },
     { query: REVIEW_SEARCH_QUERY, variables: { query: REVIEW_SEARCHES.reviewed } },
+    { query: AUTHORED_SEARCH_QUERY, variables: { query: REVIEW_SEARCHES.authored } },
   ]);
   assert.equal(host?.forge, "github");
   assert.equal(host?.host, "github.com");
   assert.equal(host?.error, null);
-  assert.equal(host?.truncated, false);
-  assert.equal(host?.requests.length, 7);
+  assert.deepEqual(host?.truncated, { assigned: false, authored: false });
+  assert.equal(host?.assigned.length, 7);
 
-  assert.deepEqual(host?.requests[0], {
+  assert.deepEqual(host?.assigned[0], {
     forge: "github",
     host: "github.com",
     project: "sleeyax/paseo-plugins",
@@ -763,10 +775,10 @@ test("lists what the viewer is asked to review and what they reviewed, as two se
 });
 
 test("a PR the viewer is asked to review again reads as requested and changed, with the team it was asked of", async () => {
-  const { forge } = forgeReplaying([{ stdout: fixture("review-search-requested.json") }, { stdout: fixture("review-search-reviewed.json") }]);
+  const { forge } = forgeReplaying(searches());
 
-  const [host] = await forge.listReviewRequests();
-  const again = host?.requests.find((request) => request.number === 7);
+  const [host] = await forge.listChangeRequests();
+  const again = host?.assigned.find((request) => request.number === 7);
 
   assert.equal(again?.author, "ghost");
   assert.equal(again?.isDraft, true);
@@ -778,10 +790,10 @@ test("a PR the viewer is asked to review again reads as requested and changed, w
 });
 
 test("a PR the viewer reviewed and is not asked again reads by their review, changed when the head moved past it", async () => {
-  const { forge } = forgeReplaying([{ stdout: fixture("review-search-requested.json") }, { stdout: fixture("review-search-reviewed.json") }]);
+  const { forge } = forgeReplaying(searches());
 
-  const [host] = await forge.listReviewRequests();
-  const byUrl = (url: string) => host?.requests.find((request) => request.url === url);
+  const [host] = await forge.listChangeRequests();
+  const byUrl = (url: string) => host?.assigned.find((request) => request.url === url);
 
   const commented = byUrl("https://github.com/themouette/claude-vm/pull/96");
   assert.equal(commented?.state, "commented");
@@ -792,10 +804,10 @@ test("a PR the viewer reviewed and is not asked again reads by their review, cha
 });
 
 test("a PR the viewer reviewed without being asked, by name or through a team, is left out", async () => {
-  const { forge } = forgeReplaying([{ stdout: fixture("review-search-requested.json") }, { stdout: fixture("review-search-reviewed.json") }]);
+  const { forge } = forgeReplaying(searches());
 
-  const [host] = await forge.listReviewRequests();
-  const urls = host?.requests.map((request) => request.url);
+  const [host] = await forge.listChangeRequests();
+  const urls = host?.assigned.map((request) => request.url);
 
   assert.ok(!urls?.includes("https://github.com/magisterquis/connectproxy/pull/2"));
   assert.ok(!urls?.includes("https://github.com/sickcodes/Docker-OSX/pull/819"));
@@ -803,27 +815,202 @@ test("a PR the viewer reviewed without being asked, by name or through a team, i
   assert.ok(urls?.includes("https://github.com/stretchr/testify/pull/1467"));
 });
 
-test("a search with more results than it returned marks the host as truncated", async () => {
-  const requested = JSON.parse(fixture("review-search-requested.json"));
-  requested.data.search.issueCount = 120;
-  const { forge } = forgeReplaying([{ stdout: JSON.stringify(requested) }, { stdout: fixture("review-search-reviewed.json") }]);
+test("a search with more results than it returned marks its list on the host as truncated", async () => {
+  const more = (name: string) => {
+    const answer = JSON.parse(fixture(name));
+    answer.data.search.issueCount = 120;
+    return { stdout: JSON.stringify(answer) };
+  };
 
-  const [host] = await forge.listReviewRequests();
+  const [assigned] = await forgeReplaying(searches({ requested: more("review-search-requested.json") })).forge.listChangeRequests();
+  const [authored] = await forgeReplaying(searches({ authored: more("review-search-authored.json") })).forge.listChangeRequests();
 
-  assert.equal(host?.truncated, true);
+  assert.deepEqual(assigned?.truncated, { assigned: true, authored: false });
+  assert.deepEqual(authored?.truncated, { assigned: false, authored: true });
 });
 
-test("a search gh cannot run comes back as the host's error rather than a throw", async () => {
-  const { forge } = forgeReplaying([
-    { exitCode: 4, stderr: "To get started with GitHub CLI, please run:  gh auth login\n" },
-    { stdout: fixture("review-search-reviewed.json") },
-  ]);
+test("a search gh cannot run comes back as the host's error once, with both lists empty, rather than a throw", async () => {
+  const failed = { exitCode: 4, stderr: "To get started with GitHub CLI, please run:  gh auth login\n" };
+  const error = {
+    forge: "github",
+    host: "github.com",
+    assigned: [],
+    authored: [],
+    truncated: { assigned: false, authored: false },
+    error: "gh failed: To get started with GitHub CLI, please run:  gh auth login",
+  };
 
-  const hosts = await forge.listReviewRequests();
+  assert.deepEqual(await forgeReplaying(searches({ requested: failed })).forge.listChangeRequests(), [error]);
+  assert.deepEqual(await forgeReplaying(searches({ authored: failed })).forge.listChangeRequests(), [error]);
+});
 
-  assert.deepEqual(hosts, [
-    { forge: "github", host: "github.com", requests: [], truncated: false, error: "gh failed: To get started with GitHub CLI, please run:  gh auth login" },
+test("the viewer's own open PRs list as authored, drafts included, with their own pending drafts and where their reviewers stand", async () => {
+  const [host] = await forgeReplaying(searches()).forge.listChangeRequests();
+
+  assert.deepEqual(host?.authored, [
+    {
+      forge: "github",
+      host: "github.com",
+      project: "example-org/uploader",
+      number: 31,
+      url: "https://github.com/example-org/uploader/pull/31",
+      title: "Resume uploads after a dropped connection",
+      author: "sleeyax",
+      isDraft: false,
+      createdAt: "2026-10-01T08:30:00Z",
+      updatedAt: "2026-10-06T16:45:12Z",
+      headSha: "3c9e0b7a1f2d4e6c8b0a9f8e7d6c5b4a39281706",
+      additions: 128,
+      deletions: 14,
+      fileCount: 5,
+      ci: "failure",
+      pendingDrafts: 1,
+      status: "changes-requested",
+      reviewers: [
+        { name: "alice", state: "approved" },
+        { name: "bob", state: "changes-requested" },
+        { name: "example-org/backend", state: "requested" },
+      ],
+      reviewedSinceLastPush: true,
+      latestReviewAt: "2026-10-06T15:02:40Z",
+    },
+    {
+      forge: "github",
+      host: "github.com",
+      project: "example-org/docs",
+      number: 4,
+      url: "https://github.com/example-org/docs/pull/4",
+      title: "Describe the retry settings",
+      author: "sleeyax",
+      isDraft: true,
+      createdAt: "2026-10-05T11:00:00Z",
+      updatedAt: "2026-10-05T11:20:00Z",
+      headSha: "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b",
+      additions: 6,
+      deletions: 0,
+      fileCount: 1,
+      ci: null,
+      pendingDrafts: 0,
+      status: "unreviewed",
+      reviewers: [],
+      reviewedSinceLastPush: false,
+      latestReviewAt: null,
+    },
   ]);
+});
+
+const HEAD_31 = "3c9e0b7a1f2d4e6c8b0a9f8e7d6c5b4a39281706";
+const EARLIER_31 = "0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c";
+
+type LatestReview = { state: string; submittedAt: string; author: { login: string }; commit: { oid: string } };
+
+function review(login: string, state: string, commit = HEAD_31, submittedAt = "2026-10-06T15:00:00Z"): LatestReview {
+  return { state, submittedAt, author: { login }, commit: { oid: commit } };
+}
+
+/** GitHub dismissing `login`'s approval submitted at `submittedAt`, on a push or by hand. */
+function dismissal(login: string, pushed: boolean, submittedAt = "2026-10-04T10:00:00Z") {
+  return { previousReviewState: "APPROVED", pullRequestCommit: pushed ? { id: "PURC_1" } : null, review: { author: { login }, submittedAt } };
+}
+
+/**
+ * The authored PR #31 as the search answers it, with these reviewers asked, reviews and dismissals in place of the fixture's.
+ * `reviews` is each reviewer's latest review, and `opinions` their latest approval or change request, which by default are the verdicts among `reviews`.
+ */
+async function authored31(pr: { asked?: string[]; reviews?: LatestReview[]; opinions?: LatestReview[]; dismissals?: object[] }) {
+  const answer = JSON.parse(fixture("review-search-authored.json"));
+  const node = answer.data.search.nodes[0];
+  const reviews = pr.reviews ?? [];
+  node.reviewRequests.nodes = (pr.asked ?? []).map((login) => ({ requestedReviewer: { __typename: "User", login } }));
+  node.latestReviews.nodes = reviews;
+  node.latestOpinionatedReviews.nodes = pr.opinions ?? reviews.filter((latest) => latest.state === "APPROVED" || latest.state === "CHANGES_REQUESTED");
+  node.timelineItems.nodes = pr.dismissals ?? [];
+  const [host] = await forgeReplaying(searches({ authored: { stdout: JSON.stringify(answer) } })).forge.listChangeRequests();
+  return host!.authored[0]!;
+}
+
+test("an approval GitHub dismissed on a push reads as an approval reset, and one dismissed by hand does not", async () => {
+  const dismissed = [review("alice", "DISMISSED", EARLIER_31, "2026-10-04T10:00:00Z")];
+
+  const reset = await authored31({ reviews: dismissed, dismissals: [dismissal("alice", true)] });
+  const byHand = await authored31({ reviews: dismissed, dismissals: [dismissal("alice", false)] });
+
+  assert.equal(reset.status, "approval-reset");
+  assert.deepEqual(reset.reviewers, [{ name: "alice", state: "unapproved" }]);
+  assert.equal(byHand.status, "commented");
+  assert.deepEqual(byHand.reviewers, [{ name: "alice", state: "commented" }]);
+});
+
+test("a comment after an approval leaves the approval standing", async () => {
+  const approved = await authored31({
+    reviews: [review("alice", "COMMENTED", HEAD_31, "2026-10-06T15:00:00Z")],
+    opinions: [review("alice", "APPROVED", EARLIER_31, "2026-10-04T10:00:00Z")],
+  });
+
+  assert.equal(approved.status, "approved");
+  assert.deepEqual(approved.reviewers, [{ name: "alice", state: "approved" }]);
+  assert.equal(approved.reviewedSinceLastPush, true);
+  assert.equal(approved.latestReviewAt, "2026-10-06T15:00:00Z");
+});
+
+test("a comment after a change request leaves the change request standing", async () => {
+  const blocked = await authored31({
+    reviews: [review("bob", "COMMENTED", HEAD_31, "2026-10-06T15:00:00Z")],
+    opinions: [review("bob", "CHANGES_REQUESTED", EARLIER_31, "2026-10-04T10:00:00Z")],
+  });
+
+  assert.equal(blocked.status, "changes-requested");
+  assert.deepEqual(blocked.reviewers, [{ name: "bob", state: "changes-requested" }]);
+});
+
+test("an approval GitHub dismissed on a push stays reset through a later comment, until the reviewer approves again", async () => {
+  const commentedSince = await authored31({ reviews: [review("alice", "COMMENTED")], dismissals: [dismissal("alice", true)] });
+  const approvedAgain = await authored31({ reviews: [review("alice", "APPROVED")], dismissals: [dismissal("alice", true)] });
+
+  assert.equal(commentedSince.status, "approval-reset");
+  assert.deepEqual(commentedSince.reviewers, [{ name: "alice", state: "unapproved" }]);
+  assert.deepEqual(approvedAgain.reviewers, [{ name: "alice", state: "approved" }]);
+});
+
+test("an approval still standing beats one GitHub took back, and a change request beats both", async () => {
+  const approved = [review("alice", "APPROVED"), review("bob", "DISMISSED", EARLIER_31, "2026-10-04T10:00:00Z")];
+  const reset = [dismissal("bob", true)];
+
+  assert.equal((await authored31({ reviews: approved, dismissals: reset })).status, "approved");
+  assert.equal((await authored31({ reviews: [...approved, review("carol", "CHANGES_REQUESTED", EARLIER_31)], dismissals: reset })).status, "changes-requested");
+});
+
+test("reviewers asked and none answered is waiting, and a review without a verdict is commented", async () => {
+  const waiting = await authored31({ asked: ["alice", "bob"] });
+  const commented = await authored31({ asked: ["bob"], reviews: [review("alice", "COMMENTED", EARLIER_31, "2026-10-04T10:00:00Z")] });
+
+  assert.equal(waiting.status, "waiting");
+  assert.deepEqual(waiting.reviewers, [
+    { name: "alice", state: "requested" },
+    { name: "bob", state: "requested" },
+  ]);
+  assert.equal(waiting.reviewedSinceLastPush, false);
+  assert.equal(waiting.latestReviewAt, null);
+  assert.equal(commented.status, "commented");
+  assert.equal(commented.reviewedSinceLastPush, false, "the review is of an earlier commit");
+  assert.equal(commented.latestReviewAt, "2026-10-04T10:00:00Z");
+});
+
+test("a reviewer asked again is waited on, and their review no longer counts as since the push", async () => {
+  const again = await authored31({ asked: ["alice"], reviews: [review("alice", "APPROVED")] });
+
+  assert.equal(again.status, "waiting");
+  assert.deepEqual(again.reviewers, [{ name: "alice", state: "requested" }]);
+  assert.equal(again.reviewedSinceLastPush, false);
+  assert.equal(again.latestReviewAt, "2026-10-06T15:00:00Z");
+});
+
+test("a reviewer asked again after requesting changes still holds them, and their review counts as since the push", async () => {
+  const again = await authored31({ asked: ["bob"], reviews: [review("bob", "CHANGES_REQUESTED")] });
+
+  assert.equal(again.status, "changes-requested");
+  assert.deepEqual(again.reviewers, [{ name: "bob", state: "changes-requested" }]);
+  assert.equal(again.reviewedSinceLastPush, true);
 });
 
 test("only GitHub's own attachment URLs are attachments", () => {

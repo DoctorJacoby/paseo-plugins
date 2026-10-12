@@ -39,7 +39,7 @@ export type ReviewStarts = {
  * Starts reviews, follows each one's preparation and guide until they settle, and opens a panel only for a start meant to open it.
  * `items` are the listed reviews, whose unsettled ones are followed too, as after the start screen was closed and opened again.
  */
-export function useReviewStarts(openPanel: (workspaceId: string) => void, items: readonly InboxItem[]): ReviewStarts {
+export function useReviewStarts(openPanel: (workspaceId: string) => void, items: readonly Pick<InboxItem, "reviewId" | "local">[]): ReviewStarts {
   const startReview = useRpc(contracts.startReview);
   const getLocalReviews = useRpc(contracts.getLocalReviews);
   const [requesting, setRequesting] = useState<ReadonlySet<string>>(new Set());

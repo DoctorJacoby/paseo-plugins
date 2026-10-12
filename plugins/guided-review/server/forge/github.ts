@@ -3,9 +3,9 @@ import type { CommandRunner } from "../command-runner.ts";
 import { oneAtATimePer } from "../one-at-a-time.ts";
 import { createCli } from "./cli.ts";
 import type { Draft, DraftLocation } from "../../shared/drafts.ts";
-import type { CiState, ReviewerState, ReviewRequest, ReviewRequestHost } from "../../shared/inbox.ts";
+import type { AuthoredChangeRequest, CiState, ListedChangeRequest, ListedHost, ReviewerState, ReviewRequest } from "../../shared/inbox.ts";
 import type { Verdict } from "../../shared/submit.ts";
-import { CLONE_TIMEOUT_MS, MAX_BRANCH_CHANGE_REQUESTS, MAX_COMMITS, MAX_LINKED_ISSUES, userOf } from "./common.ts";
+import { CLONE_TIMEOUT_MS, MAX_BRANCH_CHANGE_REQUESTS, MAX_COMMITS, MAX_LINKED_ISSUES, latestOf, reviewStatusOf, unlistedHost, userOf } from "./common.ts";
 import { SubmitSteps } from "./submit-steps.ts";
 import {
   commitsSinceIn,
@@ -343,34 +343,40 @@ const SUBMIT_LABELS: Record<Verdict, string> = {
 };
 
 /**
- * GitHub drops a review request once the reviewer reviews, so what they are a reviewer of is two
- * searches: the requests outstanding, team requests included, and the ones they answered. Pages are
- * kept at half a GraphQL page, because a full one of these timed out as a 502.
+ * GitHub drops a review request once the reviewer reviews, so what they are a reviewer of is two searches: the requests outstanding, team requests included, and the ones they answered.
+ * What the viewer authored is a third search.
+ * Pages are kept at half a GraphQL page, because a full one of these timed out as a 502.
  * `reviewed-by` also finds reviews nobody asked for, so `wasAskedToReview` keeps only those asked of the viewer.
  */
 export const REVIEW_SEARCHES = {
   requested: "is:pr is:open review-requested:@me archived:false",
   reviewed: "is:pr is:open reviewed-by:@me -author:@me -review-requested:@me archived:false",
+  authored: "is:pr is:open author:@me archived:false",
 } as const;
 const REVIEW_SEARCH_SIZE = 50;
 const REVIEW_REQUEST_EVENTS = 20;
+/** More reviewers, or dismissals, than one PR gathers. */
+const AUTHORED_REVIEWERS = 20;
 
 /**
- * A pending review is visible only to its author, so the first one is the viewer's, and its comments
- * are their drafts. A PR author can be a deleted account, which GitHub gives as null.
+ * What every listed PR is read with.
+ * A pending review is visible only to its author, so the first one is the viewer's, and its comments are their drafts.
+ * A PR author can be a deleted account, which GitHub gives as null.
  */
+const LISTED_PULL_REQUEST_FIELDS = `number url title isDraft createdAt updatedAt headRefOid additions deletions changedFiles
+        author { login }
+        statusCheckRollup { state }
+        reviews(states: PENDING, first: 1) { nodes { viewerDidAuthor comments { totalCount } } }`;
+
 export const REVIEW_SEARCH_QUERY = `query GuidedReviewInbox($query: String!) {
   viewer { login }
   search(type: ISSUE, query: $query, first: ${REVIEW_SEARCH_SIZE}) {
     issueCount
     nodes {
       ... on PullRequest {
-        number url title isDraft createdAt updatedAt headRefOid additions deletions changedFiles
-        author { login }
-        statusCheckRollup { state }
+        ${LISTED_PULL_REQUEST_FIELDS}
         viewerLatestReview { state commit { oid } }
         viewerLatestReviewRequest { requestedReviewer { __typename ... on Team { combinedSlug } } }
-        reviews(states: PENDING, first: 1) { nodes { viewerDidAuthor comments { totalCount } } }
         timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], first: ${REVIEW_REQUEST_EVENTS}) {
           nodes { ... on ReviewRequestedEvent { requestedReviewer { __typename ... on User { login } } } }
         }
@@ -379,35 +385,59 @@ export const REVIEW_SEARCH_QUERY = `query GuidedReviewInbox($query: String!) {
   }
 }`;
 
+/**
+ * The viewer's own PRs, with who is asked to review each, every reviewer's latest review, their latest approval or change request, and the latest dismissals.
+ * A later comment hides a verdict from `latestReviews`, and `latestOpinionatedReviews` leaves out a dismissed one, so a push dismissal is read from its event.
+ * A dismissal that names the commit it came with is GitHub dismissing a stale review on a push; one dismissed by hand names none.
+ */
+export const AUTHORED_SEARCH_QUERY = `query GuidedReviewAuthored($query: String!) {
+  search(type: ISSUE, query: $query, first: ${REVIEW_SEARCH_SIZE}) {
+    issueCount
+    nodes {
+      ... on PullRequest {
+        ${LISTED_PULL_REQUEST_FIELDS}
+        reviewRequests(first: ${AUTHORED_REVIEWERS}) {
+          nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { combinedSlug } } }
+        }
+        latestReviews(first: ${AUTHORED_REVIEWERS}) { nodes { state submittedAt author { login } commit { oid } } }
+        latestOpinionatedReviews(first: ${AUTHORED_REVIEWERS}) { nodes { state submittedAt author { login } } }
+        timelineItems(itemTypes: [REVIEW_DISMISSED_EVENT], last: ${AUTHORED_REVIEWERS}) {
+          nodes { ... on ReviewDismissedEvent { previousReviewState pullRequestCommit { id } review { submittedAt author { login } } } }
+        }
+      }
+    }
+  }
+}`;
+
+const ListedPullRequest = z.object({
+  number: z.number(),
+  url: z.string(),
+  title: z.string(),
+  isDraft: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  headRefOid: z.string(),
+  additions: z.number(),
+  deletions: z.number(),
+  changedFiles: z.number(),
+  author: z.object({ login: z.string() }).nullable(),
+  statusCheckRollup: z.object({ state: z.enum(["EXPECTED", "ERROR", "FAILURE", "PENDING", "SUCCESS"]) }).nullable(),
+  reviews: z.object({ nodes: z.array(z.object({ viewerDidAuthor: z.boolean(), comments: z.object({ totalCount: z.number() }) })) }),
+});
+
+const ReviewState = z.enum(["PENDING", "COMMENTED", "APPROVED", "CHANGES_REQUESTED", "DISMISSED"]);
+
 const ReviewSearchResponse = z.object({
   data: z.object({
     viewer: z.object({ login: z.string() }),
     search: z.object({
       issueCount: z.number(),
       nodes: z.array(
-        z.object({
-          number: z.number(),
-          url: z.string(),
-          title: z.string(),
-          isDraft: z.boolean(),
-          createdAt: z.string(),
-          updatedAt: z.string(),
-          headRefOid: z.string(),
-          additions: z.number(),
-          deletions: z.number(),
-          changedFiles: z.number(),
-          author: z.object({ login: z.string() }).nullable(),
-          statusCheckRollup: z.object({ state: z.enum(["EXPECTED", "ERROR", "FAILURE", "PENDING", "SUCCESS"]) }).nullable(),
-          viewerLatestReview: z
-            .object({
-              state: z.enum(["PENDING", "COMMENTED", "APPROVED", "CHANGES_REQUESTED", "DISMISSED"]),
-              commit: z.object({ oid: z.string() }).nullable(),
-            })
-            .nullable(),
+        ListedPullRequest.extend({
+          viewerLatestReview: z.object({ state: ReviewState, commit: z.object({ oid: z.string() }).nullable() }).nullable(),
           viewerLatestReviewRequest: z
             .object({ requestedReviewer: z.object({ __typename: z.string(), combinedSlug: z.string().optional() }).nullable() })
             .nullable(),
-          reviews: z.object({ nodes: z.array(z.object({ viewerDidAuthor: z.boolean(), comments: z.object({ totalCount: z.number() }) })) }),
           timelineItems: z.object({
             nodes: z.array(z.object({ requestedReviewer: z.object({ __typename: z.string(), login: z.string().optional() }).nullable() })),
           }),
@@ -417,9 +447,45 @@ const ReviewSearchResponse = z.object({
   }),
 });
 
-type SearchedPullRequest = z.output<typeof ReviewSearchResponse>["data"]["search"]["nodes"][number];
+const AuthoredPullRequest = ListedPullRequest.extend({
+  reviewRequests: z.object({
+    nodes: z.array(
+      z.object({ requestedReviewer: z.object({ login: z.string().optional(), combinedSlug: z.string().optional() }).nullable() }),
+    ),
+  }),
+  latestReviews: z.object({
+    nodes: z.array(
+      z.object({
+        state: ReviewState,
+        submittedAt: z.string().nullable(),
+        author: z.object({ login: z.string() }).nullable(),
+        commit: z.object({ oid: z.string() }).nullable(),
+      }),
+    ),
+  }),
+  latestOpinionatedReviews: z.object({
+    nodes: z.array(z.object({ state: ReviewState, submittedAt: z.string().nullable(), author: z.object({ login: z.string() }).nullable() })),
+  }),
+  timelineItems: z.object({
+    nodes: z.array(
+      z.object({
+        previousReviewState: z.string().optional(),
+        pullRequestCommit: z.object({ id: z.string() }).nullish(),
+        review: z.object({ submittedAt: z.string().nullable(), author: z.object({ login: z.string() }).nullable() }).nullish(),
+      }),
+    ),
+  }),
+});
 
-const CI_STATES: Record<NonNullable<SearchedPullRequest["statusCheckRollup"]>["state"], CiState> = {
+const AuthoredSearchResponse = z.object({
+  data: z.object({ search: z.object({ issueCount: z.number(), nodes: z.array(AuthoredPullRequest) }) }),
+});
+
+type ListedPullRequest = z.output<typeof ListedPullRequest>;
+type SearchedPullRequest = z.output<typeof ReviewSearchResponse>["data"]["search"]["nodes"][number];
+type AuthoredPullRequest = z.output<typeof AuthoredPullRequest>;
+
+const CI_STATES: Record<NonNullable<ListedPullRequest["statusCheckRollup"]>["state"], CiState> = {
   SUCCESS: "success",
   FAILURE: "failure",
   ERROR: "failure",
@@ -427,7 +493,7 @@ const CI_STATES: Record<NonNullable<SearchedPullRequest["statusCheckRollup"]>["s
   EXPECTED: "pending",
 };
 
-const REVIEWER_STATES: Record<NonNullable<SearchedPullRequest["viewerLatestReview"]>["state"], ReviewerState> = {
+const REVIEWER_STATES: Record<z.output<typeof ReviewState>, ReviewerState> = {
   PENDING: "requested",
   COMMENTED: "commented",
   APPROVED: "approved",
@@ -449,10 +515,71 @@ function wasAskedToReview(pr: SearchedPullRequest, login: string): boolean {
  * dismissed review is still one they wrote, and a pending one is not written yet.
  */
 function reviewRequestOf(pr: SearchedPullRequest, requested: boolean): ReviewRequest | null {
-  const ref = parsePullRequestUrl(pr.url);
-  if (ref === null) return null;
+  const listed = listedOf(pr);
+  if (listed === null) return null;
   const review = pr.viewerLatestReview?.state === "PENDING" ? null : pr.viewerLatestReview;
   const team = pr.viewerLatestReviewRequest?.requestedReviewer;
+  return {
+    ...listed,
+    state: requested || review === null ? "requested" : REVIEWER_STATES[review.state],
+    viaTeam: requested && team?.__typename === "Team" ? (team.combinedSlug ?? null) : null,
+    changedSinceReview: review === null ? null : requested || review.commit?.oid !== pr.headRefOid,
+  };
+}
+
+/**
+ * The viewer's own PR with where each reviewer stands: their latest approval or change request, else their approval GitHub dismissed on a push, else that they commented.
+ * A reviewer asked again is `requested`, as on GitLab, where asking again resets their state, unless they requested changes: a blocking review is never hidden.
+ * The author's own reviews are replies to threads, not reviews of their PR, so they are left out.
+ */
+function authoredOf(pr: AuthoredPullRequest): AuthoredChangeRequest | null {
+  const listed = listedOf(pr);
+  if (listed === null) return null;
+  const resets = new Map<string, string>();
+  for (const { previousReviewState, pullRequestCommit, review } of pr.timelineItems.nodes) {
+    if (previousReviewState !== "APPROVED" || !pullRequestCommit || !review?.submittedAt) continue;
+    const login = userOf(review.author).login;
+    const known = resets.get(login);
+    if (known === undefined || Date.parse(review.submittedAt) > Date.parse(known)) resets.set(login, review.submittedAt);
+  }
+  const opinions = new Map(pr.latestOpinionatedReviews.nodes.map((opinion) => [userOf(opinion.author).login, opinion]));
+  const reviews = pr.latestReviews.nodes.filter((review) => review.state !== "PENDING" && review.author?.login !== pr.author?.login);
+  const asked = new Set(
+    pr.reviewRequests.nodes.flatMap(({ requestedReviewer }) => {
+      const name = requestedReviewer?.combinedSlug ?? requestedReviewer?.login;
+      return name ? [name] : [];
+    }),
+  );
+  const states = new Map<string, ReviewerState>();
+  for (const review of reviews) {
+    const login = userOf(review.author).login;
+    states.set(login, standingOf(opinions.get(login), resets.get(login)) ?? REVIEWER_STATES[review.state]);
+  }
+  for (const name of asked) {
+    if (states.get(name) !== "changes-requested") states.set(name, "requested");
+  }
+  const reviewers = [...states].map(([name, state]) => ({ name, state }));
+  return {
+    ...listed,
+    status: reviewStatusOf(reviewers),
+    reviewers,
+    reviewedSinceLastPush: reviews.some(
+      (review) => review.state !== "DISMISSED" && states.get(userOf(review.author).login) !== "requested" && review.commit?.oid === pr.headRefOid,
+    ),
+    latestReviewAt: latestOf(reviews.flatMap((review) => (review.submittedAt === null ? [] : [review.submittedAt]))),
+  };
+}
+
+/** A reviewer's verdict, or the approval a push took from them when that came after it; null when they gave none. */
+function standingOf(opinion: AuthoredPullRequest["latestOpinionatedReviews"]["nodes"][number] | undefined, resetAt: string | undefined): ReviewerState | null {
+  const verdict = opinion?.state === "APPROVED" || opinion?.state === "CHANGES_REQUESTED" ? opinion : undefined;
+  if (resetAt !== undefined && (verdict?.submittedAt == null || Date.parse(resetAt) > Date.parse(verdict.submittedAt))) return "unapproved";
+  return verdict === undefined ? null : REVIEWER_STATES[verdict.state];
+}
+
+function listedOf(pr: ListedPullRequest): ListedChangeRequest | null {
+  const ref = parsePullRequestUrl(pr.url);
+  if (ref === null) return null;
   return {
     forge: "github",
     host: ref.host,
@@ -469,9 +596,6 @@ function reviewRequestOf(pr: SearchedPullRequest, requested: boolean): ReviewReq
     deletions: pr.deletions,
     fileCount: pr.changedFiles,
     ci: pr.statusCheckRollup ? CI_STATES[pr.statusCheckRollup.state] : null,
-    state: requested || review === null ? "requested" : REVIEWER_STATES[review.state],
-    viaTeam: requested && team?.__typename === "Team" ? (team.combinedSlug ?? null) : null,
-    changedSinceReview: review === null ? null : requested || review.commit?.oid !== pr.headRefOid,
     pendingDrafts: pr.reviews.nodes.find((pending) => pending.viewerDidAuthor)?.comments.totalCount ?? 0,
   };
 }
@@ -748,22 +872,36 @@ export function createGitHubForge(options: GitHubForgeOptions): Forge {
       });
     },
 
-    async listReviewRequests(): Promise<ReviewRequestHost[]> {
-      const search = (query: string) =>
-        gh.json(ReviewSearchResponse, ["api", "graphql", "--hostname", GITHUB_HOST, "--input", "-"], {
-          input: JSON.stringify({ query: REVIEW_SEARCH_QUERY, variables: { query } }),
+    async listChangeRequests(): Promise<ListedHost[]> {
+      const search = <T extends z.ZodType>(response: T, query: string, terms: string) =>
+        gh.json(response, ["api", "graphql", "--hostname", GITHUB_HOST, "--input", "-"], {
+          input: JSON.stringify({ query, variables: { query: terms } }),
         });
+      const hasMore = (...answers: { data: { search: { issueCount: number; nodes: unknown[] } } }[]) =>
+        answers.some(({ data }) => data.search.issueCount > data.search.nodes.length);
       try {
-        const [requested, reviewed] = await Promise.all([search(REVIEW_SEARCHES.requested), search(REVIEW_SEARCHES.reviewed)]);
-        const requests = [
+        const [requested, reviewed, authored] = await Promise.all([
+          search(ReviewSearchResponse, REVIEW_SEARCH_QUERY, REVIEW_SEARCHES.requested),
+          search(ReviewSearchResponse, REVIEW_SEARCH_QUERY, REVIEW_SEARCHES.reviewed),
+          search(AuthoredSearchResponse, AUTHORED_SEARCH_QUERY, REVIEW_SEARCHES.authored),
+        ]);
+        const assigned = [
           ...requested.data.search.nodes.map((pr) => reviewRequestOf(pr, true)),
           ...reviewed.data.search.nodes.filter((pr) => wasAskedToReview(pr, reviewed.data.viewer.login)).map((pr) => reviewRequestOf(pr, false)),
         ].filter((request) => request !== null);
-        const truncated = [requested, reviewed].some(({ data }) => data.search.issueCount > data.search.nodes.length);
-        return [{ forge: "github", host: GITHUB_HOST, requests, truncated, error: null }];
+        return [
+          {
+            forge: "github",
+            host: GITHUB_HOST,
+            assigned,
+            authored: authored.data.search.nodes.map(authoredOf).filter((request) => request !== null),
+            truncated: { assigned: hasMore(requested, reviewed), authored: hasMore(authored) },
+            error: null,
+          },
+        ];
       } catch (error) {
         if (!(error instanceof ForgeError)) throw error;
-        return [{ forge: "github", host: GITHUB_HOST, requests: [], truncated: false, error: error.message }];
+        return [unlistedHost("github", GITHUB_HOST, error.message)];
       }
     },
   };

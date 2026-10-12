@@ -17,7 +17,7 @@ import { fontSize, leading } from "./theme.ts";
 export function StartSidebarItem({ theme, currentScreen, openScreen }: PluginSidebarItemProps) {
   const getInbox = useRpc(contracts.getInbox);
   const inbox = useQuery({ queryKey: INBOX_QUERY_KEY, queryFn: () => getInbox({}), staleTime: Infinity, refetchOnWindowFocus: false });
-  const count = inbox.data ? attentionCount(inbox.data.items) : 0;
+  const count = inbox.data ? attentionCount(inbox.data) : 0;
 
   return (
     <SidebarRow
