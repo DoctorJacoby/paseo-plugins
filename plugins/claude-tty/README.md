@@ -116,3 +116,9 @@ Agents can't move between the two providers, so start throwaway sessions on the 
 `pnpm --filter @paseo-plugins/claude-tty identity claude-tty` stamps the checkout back.
 
 Design decisions are in [docs/adr](docs/adr).
+
+## License and attributions
+
+The provider icon pairs a terminal badge with Claude's spark, the mark Paseo shows for its built-in Claude provider.
+Claude, Claude Code and the spark belong to Anthropic, and this plugin is not affiliated with or endorsed by Anthropic.
+The repository's licence grants no right to them.
