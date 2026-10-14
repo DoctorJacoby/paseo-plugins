@@ -5,6 +5,7 @@ import test from "node:test";
 import type { LineRef } from "../../shared/drafts.ts";
 import { anchorAt } from "../anchors.ts";
 import { fakeCommandRunner, type ScriptedResult } from "../fake-command-runner.ts";
+import { CliNotFoundError } from "./cli.ts";
 import { createGitLabForge, parseAuthStatus, parseMergeRequestUrl, REQUEST_CHANGES_MUTATION, REVIEW_LIST_QUERY, uploadOf } from "./gitlab.ts";
 import { ForgeError, type AnchorLine, type ChangeRequestRef, type DraftAnchor, type DraftTarget } from "./port.ts";
 
@@ -290,7 +291,7 @@ test("a glab that cannot run points at the setting", async () => {
 
   await assert.rejects(
     forge.matchUrl(MR_3931.url),
-    new ForgeError('Could not run glab at "/usr/bin/glab" (spawn /usr/bin/glab ENOENT). Set the glab path in the Guided Review settings.'),
+    new CliNotFoundError('Could not run glab at "/usr/bin/glab" (spawn /usr/bin/glab ENOENT). Set the glab path in the Guided Review settings.'),
   );
 });
 
@@ -1217,6 +1218,12 @@ test("lists the open MRs the viewer reviews on each host glab is logged in to, a
     changedSinceReview: null,
     pendingDrafts: null,
   });
+});
+
+test("lists no host when glab is not installed, so a GitHub-only reviewer's list still loads", async () => {
+  const { forge } = forgeReplaying([{ exitCode: null, spawnError: "spawn /usr/bin/glab ENOENT" }]);
+
+  assert.deepEqual(await forge.listChangeRequests(), []);
 });
 
 test("an MR reads by the viewer's own reviewer record, changed when the head commit is newer than it", async () => {

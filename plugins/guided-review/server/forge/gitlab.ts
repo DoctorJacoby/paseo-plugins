@@ -4,7 +4,7 @@ import type { Draft, DraftLocation, LineRef } from "../../shared/drafts.ts";
 import type { CommandRunner } from "../command-runner.ts";
 import type { Verdict } from "../../shared/submit.ts";
 import type { AuthoredChangeRequest, CiState, ListedChangeRequest, ListedHost, ReviewerState, ReviewRequest } from "../../shared/inbox.ts";
-import { createCli, type Cli } from "./cli.ts";
+import { CliNotFoundError, createCli, type Cli } from "./cli.ts";
 import { GITHUB_HOST } from "./github.ts";
 import { CLONE_TIMEOUT_MS, COMMIT_READS_AT_ONCE, mapAtMost, MAX_BRANCH_CHANGE_REQUESTS, MAX_COMMITS, MAX_LINKED_ISSUES, latestOf, reviewStatusOf, unlistedHost, userOf } from "./common.ts";
 import { SubmitSteps } from "./submit-steps.ts";
@@ -904,7 +904,15 @@ export function createGitLabForge(options: GitLabForgeOptions): Forge {
     },
 
     async listChangeRequests(): Promise<ListedHost[]> {
-      const statuses = parseAuthStatus(await glab.report(["auth", "status", "--all"]));
+      let report: string;
+      try {
+        report = await glab.report(["auth", "status", "--all"]);
+      } catch (error) {
+        // GitLab has no host of its own to report as unlisted, so a reviewer without glab has none.
+        if (error instanceof CliNotFoundError) return [];
+        throw error;
+      }
+      const statuses = parseAuthStatus(report);
       return Promise.all(
         statuses.map(async ({ host, loggedIn, problem }): Promise<ListedHost> => {
           if (!loggedIn) {

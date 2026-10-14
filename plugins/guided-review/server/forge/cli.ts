@@ -26,6 +26,11 @@ type FileCall = CallOptions & { maxBytes: number };
 /** Long enough for a paginated file list on a large PR, short enough that a hung call ends. */
 export const DEFAULT_CLI_TIMEOUT_MS = 120_000;
 
+/** The CLI is not where the settings say, which for a reviewer on only the other forge means it is not installed. */
+export class CliNotFoundError extends ForgeError {
+  override name = "CliNotFoundError";
+}
+
 /** One forge CLI, whose failures come back as a `ForgeError` in a sentence. */
 export type Cli = {
   text(args: readonly string[], options?: CallOptions): Promise<string>;
@@ -61,9 +66,8 @@ export function createCli(options: CliOptions): Cli {
     }
     if (result.spawnError !== null) {
       if (/ENOENT|EACCES/.test(result.spawnError)) {
-        throw new ForgeError(
-          `Could not run ${options.name} at "${binary}" (${result.spawnError}). Set the ${options.name} path in the Guided Review settings.`,
-        );
+        const message = `Could not run ${options.name} at "${binary}" (${result.spawnError}). Set the ${options.name} path in the Guided Review settings.`;
+        throw /ENOENT/.test(result.spawnError) ? new CliNotFoundError(message) : new ForgeError(message);
       }
       throw new ForgeError(`${options.name} did not finish: ${result.spawnError}.`);
     }

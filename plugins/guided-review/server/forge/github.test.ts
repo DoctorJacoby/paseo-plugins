@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fakeCommandRunner, type FakeCommandRunner, type ScriptedResult } from "../fake-command-runner.ts";
+import { CliNotFoundError } from "./cli.ts";
 import {
   ADD_THREAD_MUTATION,
   AUTHORED_SEARCH_QUERY,
@@ -182,7 +183,7 @@ test("a gh that cannot run points at the setting", async () => {
 
   await assert.rejects(
     forge.fetchChangeRequest(PR_105),
-    new ForgeError(
+    new CliNotFoundError(
       'Could not run gh at "/opt/gh/bin/gh" (spawn /opt/gh/bin/gh ENOENT). Set the gh path in the Guided Review settings.',
     ),
   );
