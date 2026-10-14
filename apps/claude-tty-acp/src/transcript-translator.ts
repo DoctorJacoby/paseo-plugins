@@ -10,6 +10,7 @@ import type {
   ToolKind,
 } from "@agentclientprotocol/sdk";
 import { readOutputTail } from "./background-output.ts";
+import { type IssueForge, linkIssueReferences, readIssueForge } from "./issue-links.ts";
 import { writeLog } from "./log.ts";
 import { questionText } from "./question-text.ts";
 import { MODELS } from "./session-options.ts";
@@ -198,6 +199,7 @@ export class TranscriptTranslator {
    */
   private readonly liveFrom = Date.now();
   private modelFallbackHandler: ((fallback: ModelFallback) => void) | null = null;
+  private issueForge: Promise<IssueForge> | null = null;
   private lastUsage = "";
   private assistantChunkCount = 0;
   private suppressedAssistantText: string | null = null;
@@ -371,7 +373,9 @@ export class TranscriptTranslator {
             this.suppressedAssistantText = null;
             this.emitted.add(key);
           } else if (text) {
-            await this.emitContent("agent_message_chunk", key, messageId, { type: "text", text });
+            this.issueForge ??= readIssueForge(this.cwd);
+            const linked = linkIssueReferences(text, await this.issueForge);
+            await this.emitContent("agent_message_chunk", key, messageId, { type: "text", text: linked });
           }
           break;
         }

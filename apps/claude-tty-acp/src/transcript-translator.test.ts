@@ -1591,3 +1591,21 @@ test("sends an edit's diff again with its result, rather than the line saying th
   assert.ok(shell?.sessionUpdate === "tool_call_update");
   assert.deepEqual(shell.content, [{ type: "content", content: { type: "text", text: "3 passing" } }]);
 });
+
+test("links an owner/repo issue reference in Claude's reply, as Claude Code's terminal does", async () => {
+  const notifications: SessionNotification[] = [];
+  const connection = {
+    sessionUpdate: async (notification: SessionNotification) => {
+      notifications.push(notification);
+    },
+    extNotification: async () => undefined,
+  } as unknown as AgentSideConnection;
+  const cwd = await mkdtemp(path.join(tmpdir(), "translator-issue-links-"));
+  const translator = new TranscriptTranslator("session", cwd, connection);
+
+  await translator.translate([{ type: "assistant", uuid: "reply", message: { content: [{ type: "text", text: "Fixed in **owner/repo#12**." }] } }]);
+
+  const update = notifications[0]?.update;
+  assert.equal(update?.sessionUpdate, "agent_message_chunk");
+  assert.deepEqual(update.content, { type: "text", text: "Fixed in **[owner/repo#12](https://github.com/owner/repo/issues/12)**." });
+});
